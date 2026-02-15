@@ -28,7 +28,7 @@ public struct MiniAppView: View {
             if let manifest = manifest {
                 if manifest.window?.navigationStyle != "custom" {
                     HStack {
-                        Text(manifest.window?.navigationBarTitleText ?? manifest.appName)
+                        Text(manifest.window?.navigationBarTitleText ?? manifest.name)
                             .font(.headline)
                     }
                     .frame(maxWidth: .infinity)
@@ -63,7 +63,7 @@ public struct MiniAppView: View {
 
             let extractDir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("miniapp")
-                .appendingPathComponent(m.appID)
+                .appendingPathComponent(m.appId)
 
             // Clean and recreate extraction directory
             try? FileManager.default.removeItem(at: extractDir)

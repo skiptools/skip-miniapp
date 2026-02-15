@@ -16,29 +16,34 @@ final class SkipMiniAppModelTests: XCTestCase {
     func testParseMinimalManifest() throws {
         let json = """
         {
-            "appID": "com.example.test",
-            "appName": "Test App",
+            "app_id": "com.example.test",
+            "name": "Test App",
             "icons": [{"src": "icon.png", "sizes": "48x48"}],
-            "versionName": "1.0.0",
-            "minPlatformVersion": "1.0.0",
+            "version": {"code": 1, "name": "1.0.0"},
+            "platform_version": {"min_code": 1},
             "pages": ["pages/index/index"]
         }
         """
         let data = try XCTUnwrap(json.data(using: .utf8))
         let manifest = try JSONDecoder().decode(MiniAppManifest.self, from: data)
 
-        XCTAssertEqual(manifest.appID, "com.example.test")
-        XCTAssertEqual(manifest.appName, "Test App")
-        XCTAssertEqual(manifest.versionName, "1.0.0")
-        XCTAssertEqual(manifest.minPlatformVersion, "1.0.0")
+        XCTAssertEqual(manifest.appId, "com.example.test")
+        XCTAssertEqual(manifest.name, "Test App")
+        XCTAssertEqual(manifest.version.code, 1)
+        XCTAssertEqual(manifest.version.name, "1.0.0")
+        XCTAssertEqual(manifest.platformVersion.minCode, 1)
+        XCTAssertNil(manifest.platformVersion.targetCode)
+        XCTAssertNil(manifest.platformVersion.releaseType)
         XCTAssertEqual(manifest.pages.count, 1)
         XCTAssertEqual(manifest.pages[0], "pages/index/index")
         XCTAssertEqual(manifest.icons.count, 1)
         XCTAssertEqual(manifest.icons[0].src, "icon.png")
         XCTAssertEqual(manifest.icons[0].sizes, "48x48")
+        XCTAssertNil(manifest.icons[0].label)
         XCTAssertNil(manifest.shortName)
         XCTAssertNil(manifest.description)
-        XCTAssertNil(manifest.versionCode)
+        XCTAssertNil(manifest.colorScheme)
+        XCTAssertNil(manifest.deviceType)
         XCTAssertNil(manifest.window)
         XCTAssertNil(manifest.widgets)
         XCTAssertNil(manifest.reqPermissions)
@@ -47,39 +52,40 @@ final class SkipMiniAppModelTests: XCTestCase {
     func testParseFullManifest() throws {
         let json = """
         {
-            "appID": "com.example.full",
-            "appName": "Full Test App",
-            "shortName": "Full",
+            "app_id": "com.example.full",
+            "name": "Full Test App",
+            "short_name": "Full",
             "description": "A fully configured MiniApp",
             "icons": [
-                {"src": "icon-small.png", "sizes": "48x48"},
+                {"src": "icon-small.png", "sizes": "48x48", "label": "Small icon"},
                 {"src": "icon-large.png", "sizes": "192x192"}
             ],
-            "versionName": "2.1.0",
-            "versionCode": 5,
-            "minPlatformVersion": "1.2.0",
+            "version": {"code": 5, "name": "2.1.0"},
+            "platform_version": {"min_code": 2, "target_code": 5, "release_type": "Release"},
             "pages": ["pages/index/index", "pages/detail/detail", "pages/settings/settings"],
             "dir": "ltr",
             "lang": "en-US",
+            "color_scheme": "auto",
+            "device_type": ["phone", "tablet"],
             "window": {
-                "navigationBarBackgroundColor": "#FF5733",
-                "navigationBarTextStyle": "white",
-                "navigationBarTitleText": "My App",
-                "navigationStyle": "default",
-                "backgroundColor": "#FFFFFF",
-                "backgroundTextStyle": "dark",
-                "enablePullDownRefresh": true,
-                "onReachBottomDistance": 100,
+                "navigation_bar_background_color": "#FF5733",
+                "navigation_bar_text_style": "white",
+                "navigation_bar_title_text": "My App",
+                "navigation_style": "default",
+                "background_color": "#FFFFFF",
+                "background_text_style": "dark",
+                "enable_pull_down_refresh": true,
+                "on_reach_bottom_distance": 100,
                 "orientation": "portrait",
                 "fullscreen": false,
-                "designWidth": 750,
-                "autoDesignWidth": true
+                "design_width": 750,
+                "auto_design_width": true
             },
             "widgets": [
-                {"name": "Weather", "path": "widgets/weather/weather", "minPlatformVersion": "1.1.0"},
+                {"name": "Weather", "path": "widgets/weather/weather", "min_code": 3},
                 {"name": "Calendar", "path": "widgets/calendar/calendar"}
             ],
-            "req-permissions": [
+            "req_permissions": [
                 {"name": "location", "reason": "For navigation features"},
                 {"name": "camera", "reason": "For photo capture"}
             ]
@@ -88,38 +94,44 @@ final class SkipMiniAppModelTests: XCTestCase {
         let data = try XCTUnwrap(json.data(using: .utf8))
         let manifest = try JSONDecoder().decode(MiniAppManifest.self, from: data)
 
-        XCTAssertEqual(manifest.appID, "com.example.full")
-        XCTAssertEqual(manifest.appName, "Full Test App")
+        XCTAssertEqual(manifest.appId, "com.example.full")
+        XCTAssertEqual(manifest.name, "Full Test App")
         XCTAssertEqual(manifest.shortName, "Full")
         XCTAssertEqual(manifest.description, "A fully configured MiniApp")
         XCTAssertEqual(manifest.icons.count, 2)
-        XCTAssertEqual(manifest.versionName, "2.1.0")
-        XCTAssertEqual(manifest.versionCode, 5)
-        XCTAssertEqual(manifest.minPlatformVersion, "1.2.0")
+        XCTAssertEqual(manifest.icons[0].label, "Small icon")
+        XCTAssertNil(manifest.icons[1].label)
+        XCTAssertEqual(manifest.version.code, 5)
+        XCTAssertEqual(manifest.version.name, "2.1.0")
+        XCTAssertEqual(manifest.platformVersion.minCode, 2)
+        XCTAssertEqual(manifest.platformVersion.targetCode, 5)
+        XCTAssertEqual(manifest.platformVersion.releaseType, "Release")
         XCTAssertEqual(manifest.pages.count, 3)
         XCTAssertEqual(manifest.dir, "ltr")
         XCTAssertEqual(manifest.lang, "en-US")
+        XCTAssertEqual(manifest.colorScheme, "auto")
+        XCTAssertEqual(manifest.deviceType?.count, 2)
     }
 
     func testManifestWindowConfig() throws {
         let json = """
         {
-            "appID": "com.example.win",
-            "appName": "Window Test",
-            "icons": [{"src": "i.png", "sizes": "48x48"}],
-            "versionName": "1.0.0",
-            "minPlatformVersion": "1.0.0",
+            "app_id": "com.example.win",
+            "name": "Window Test",
+            "icons": [{"src": "i.png"}],
+            "version": {"code": 1, "name": "1.0.0"},
+            "platform_version": {"min_code": 1},
             "pages": ["pages/index/index"],
             "window": {
-                "navigationBarBackgroundColor": "#123456",
-                "navigationBarTextStyle": "black",
-                "navigationBarTitleText": "Custom Title",
-                "navigationStyle": "custom",
-                "backgroundColor": "#ABCDEF",
-                "enablePullDownRefresh": true,
+                "navigation_bar_background_color": "#123456",
+                "navigation_bar_text_style": "black",
+                "navigation_bar_title_text": "Custom Title",
+                "navigation_style": "custom",
+                "background_color": "#ABCDEF",
+                "enable_pull_down_refresh": true,
                 "orientation": "landscape",
                 "fullscreen": true,
-                "designWidth": 1080
+                "design_width": 1080
             }
         }
         """
@@ -141,14 +153,14 @@ final class SkipMiniAppModelTests: XCTestCase {
     func testManifestWidgets() throws {
         let json = """
         {
-            "appID": "com.example.widgets",
-            "appName": "Widget Test",
-            "icons": [{"src": "i.png", "sizes": "48x48"}],
-            "versionName": "1.0.0",
-            "minPlatformVersion": "1.0.0",
+            "app_id": "com.example.widgets",
+            "name": "Widget Test",
+            "icons": [{"src": "i.png"}],
+            "version": {"code": 1, "name": "1.0.0"},
+            "platform_version": {"min_code": 1},
             "pages": ["pages/index/index"],
             "widgets": [
-                {"name": "Clock", "path": "widgets/clock/clock", "minPlatformVersion": "2.0.0"},
+                {"name": "Clock", "path": "widgets/clock/clock", "min_code": 3},
                 {"name": "Notes", "path": "widgets/notes/notes"}
             ]
         }
@@ -160,21 +172,21 @@ final class SkipMiniAppModelTests: XCTestCase {
         XCTAssertEqual(widgets.count, 2)
         XCTAssertEqual(widgets[0].name, "Clock")
         XCTAssertEqual(widgets[0].path, "widgets/clock/clock")
-        XCTAssertEqual(widgets[0].minPlatformVersion, "2.0.0")
+        XCTAssertEqual(widgets[0].minCode, 3)
         XCTAssertEqual(widgets[1].name, "Notes")
-        XCTAssertNil(widgets[1].minPlatformVersion)
+        XCTAssertNil(widgets[1].minCode)
     }
 
     func testManifestPermissions() throws {
         let json = """
         {
-            "appID": "com.example.perms",
-            "appName": "Permission Test",
-            "icons": [{"src": "i.png", "sizes": "48x48"}],
-            "versionName": "1.0.0",
-            "minPlatformVersion": "1.0.0",
+            "app_id": "com.example.perms",
+            "name": "Permission Test",
+            "icons": [{"src": "i.png"}],
+            "version": {"code": 1, "name": "1.0.0"},
+            "platform_version": {"min_code": 1},
             "pages": ["pages/index/index"],
-            "req-permissions": [
+            "req_permissions": [
                 {"name": "location", "reason": "Navigation"},
                 {"name": "camera"}
             ]
@@ -193,23 +205,24 @@ final class SkipMiniAppModelTests: XCTestCase {
 
     func testManifestEncodingRoundtrip() throws {
         let original = MiniAppManifest(
-            appID: "com.example.roundtrip",
-            appName: "Roundtrip Test",
+            appId: "com.example.roundtrip",
+            name: "Roundtrip Test",
             shortName: "RT",
             description: "Testing encode/decode roundtrip",
             icons: [MiniAppIcon(src: "icon.png", sizes: "64x64")],
-            versionName: "3.0.0",
-            versionCode: 10,
-            minPlatformVersion: "2.0.0",
+            version: MiniAppVersion(code: 10, name: "3.0.0"),
+            platformVersion: MiniAppPlatformVersion(minCode: 2, targetCode: 5, releaseType: "Release"),
             pages: ["pages/home/home", "pages/about/about"],
             dir: "ltr",
             lang: "en",
+            colorScheme: "dark",
+            deviceType: ["phone"],
             window: MiniAppWindow(
                 navigationBarBackgroundColor: "#000000",
                 navigationBarTextStyle: "white",
                 orientation: "portrait"
             ),
-            widgets: [MiniAppWidget(name: "Status", path: "widgets/status/status")],
+            widgets: [MiniAppWidget(name: "Status", path: "widgets/status/status", minCode: 2)],
             reqPermissions: [MiniAppPermission(name: "contacts", reason: "Sync")]
         )
 
@@ -221,17 +234,117 @@ final class SkipMiniAppModelTests: XCTestCase {
 
     func testManifestInitDefaults() throws {
         let manifest = MiniAppManifest(
-            appID: "com.example.defaults",
-            appName: "Defaults",
-            versionName: "1.0.0",
-            minPlatformVersion: "1.0.0"
+            appId: "com.example.defaults",
+            name: "Defaults",
+            version: MiniAppVersion(code: 1, name: "1.0.0"),
+            platformVersion: MiniAppPlatformVersion(minCode: 1)
         )
 
-        XCTAssertEqual(manifest.appID, "com.example.defaults")
+        XCTAssertEqual(manifest.appId, "com.example.defaults")
         XCTAssertEqual(manifest.icons.count, 0)
         XCTAssertEqual(manifest.pages.count, 0)
         XCTAssertNil(manifest.shortName)
+        XCTAssertNil(manifest.colorScheme)
+        XCTAssertNil(manifest.deviceType)
         XCTAssertNil(manifest.window)
+    }
+
+    func testVersionResource() throws {
+        let json = """
+        {"code": 42, "name": "4.2.0"}
+        """
+        let data = try XCTUnwrap(json.data(using: .utf8))
+        let version = try JSONDecoder().decode(MiniAppVersion.self, from: data)
+        XCTAssertEqual(version.code, 42)
+        XCTAssertEqual(version.name, "4.2.0")
+    }
+
+    func testPlatformVersionResource() throws {
+        let json = """
+        {"min_code": 3, "target_code": 7, "release_type": "Beta1"}
+        """
+        let data = try XCTUnwrap(json.data(using: .utf8))
+        let pv = try JSONDecoder().decode(MiniAppPlatformVersion.self, from: data)
+        XCTAssertEqual(pv.minCode, 3)
+        XCTAssertEqual(pv.targetCode, 7)
+        XCTAssertEqual(pv.releaseType, "Beta1")
+    }
+
+    func testPlatformVersionMinimalResource() throws {
+        let json = """
+        {"min_code": 1}
+        """
+        let data = try XCTUnwrap(json.data(using: .utf8))
+        let pv = try JSONDecoder().decode(MiniAppPlatformVersion.self, from: data)
+        XCTAssertEqual(pv.minCode, 1)
+        XCTAssertNil(pv.targetCode)
+        XCTAssertNil(pv.releaseType)
+    }
+
+    func testIconWithLabel() throws {
+        let json = """
+        {"src": "logo.png", "sizes": "120x120", "label": "App Logo"}
+        """
+        let data = try XCTUnwrap(json.data(using: .utf8))
+        let icon = try JSONDecoder().decode(MiniAppIcon.self, from: data)
+        XCTAssertEqual(icon.src, "logo.png")
+        XCTAssertEqual(icon.sizes, "120x120")
+        XCTAssertEqual(icon.label, "App Logo")
+    }
+
+    func testIconMinimal() throws {
+        let json = """
+        {"src": "logo.png"}
+        """
+        let data = try XCTUnwrap(json.data(using: .utf8))
+        let icon = try JSONDecoder().decode(MiniAppIcon.self, from: data)
+        XCTAssertEqual(icon.src, "logo.png")
+        XCTAssertNil(icon.sizes)
+        XCTAssertNil(icon.label)
+    }
+
+    func testManifestSnakeCaseJsonKeys() throws {
+        // Verify that encoding produces the correct snake_case JSON keys
+        let manifest = MiniAppManifest(
+            appId: "com.example.keys",
+            name: "Key Test",
+            shortName: "KT",
+            icons: [MiniAppIcon(src: "i.png")],
+            version: MiniAppVersion(code: 1, name: "1.0.0"),
+            platformVersion: MiniAppPlatformVersion(minCode: 1),
+            pages: ["pages/index/index"],
+            colorScheme: "light",
+            deviceType: ["phone"],
+            reqPermissions: [MiniAppPermission(name: "location")]
+        )
+
+        let data = try JSONEncoder().encode(manifest)
+        let jsonString = try XCTUnwrap(String(data: data, encoding: .utf8))
+
+        // The JSON should use snake_case keys per the W3C spec
+        XCTAssertTrue(jsonString.range(of: "\"app_id\"") != nil)
+        XCTAssertTrue(jsonString.range(of: "\"short_name\"") != nil)
+        XCTAssertTrue(jsonString.range(of: "\"platform_version\"") != nil)
+        XCTAssertTrue(jsonString.range(of: "\"color_scheme\"") != nil)
+        XCTAssertTrue(jsonString.range(of: "\"device_type\"") != nil)
+        XCTAssertTrue(jsonString.range(of: "\"req_permissions\"") != nil)
+    }
+
+    func testWindowSnakeCaseJsonKeys() throws {
+        let window = MiniAppWindow(
+            navigationBarBackgroundColor: "#000000",
+            enablePullDownRefresh: true,
+            designWidth: 750,
+            autoDesignWidth: false
+        )
+
+        let data = try JSONEncoder().encode(window)
+        let jsonString = try XCTUnwrap(String(data: data, encoding: .utf8))
+
+        XCTAssertTrue(jsonString.range(of: "\"navigation_bar_background_color\"") != nil)
+        XCTAssertTrue(jsonString.range(of: "\"enable_pull_down_refresh\"") != nil)
+        XCTAssertTrue(jsonString.range(of: "\"design_width\"") != nil)
+        XCTAssertTrue(jsonString.range(of: "\"auto_design_width\"") != nil)
     }
 
     // MARK: - Package Tests
@@ -244,11 +357,11 @@ final class SkipMiniAppModelTests: XCTestCase {
 
     private func createSamplePackage(at path: String) throws -> MiniAppManifest {
         let manifest = MiniAppManifest(
-            appID: "com.example.sample",
-            appName: "Sample MiniApp",
+            appId: "com.example.sample",
+            name: "Sample MiniApp",
             icons: [MiniAppIcon(src: "icon.png", sizes: "48x48")],
-            versionName: "1.0.0",
-            minPlatformVersion: "1.0.0",
+            version: MiniAppVersion(code: 1, name: "1.0.0"),
+            platformVersion: MiniAppPlatformVersion(minCode: 1),
             pages: ["pages/index/index"]
         )
 
@@ -274,9 +387,9 @@ final class SkipMiniAppModelTests: XCTestCase {
         let package = MiniAppPackage(path: pkgPath)
         let manifest = try package.readManifest()
 
-        XCTAssertEqual(manifest.appID, expectedManifest.appID)
-        XCTAssertEqual(manifest.appName, expectedManifest.appName)
-        XCTAssertEqual(manifest.versionName, expectedManifest.versionName)
+        XCTAssertEqual(manifest.appId, expectedManifest.appId)
+        XCTAssertEqual(manifest.name, expectedManifest.name)
+        XCTAssertEqual(manifest.version, expectedManifest.version)
         XCTAssertEqual(manifest.pages, expectedManifest.pages)
     }
 
@@ -291,7 +404,6 @@ final class SkipMiniAppModelTests: XCTestCase {
         let entries = try package.listEntries()
 
         XCTAssertEqual(entries.count, 6)
-        // Sort for deterministic checking
         let sorted = entries.sorted()
         XCTAssertEqual(sorted[0], "app.css")
         XCTAssertEqual(sorted[1], "app.js")
@@ -367,7 +479,6 @@ final class SkipMiniAppModelTests: XCTestCase {
             let _ = try package.readManifest()
             XCTFail("Expected error for missing manifest")
         } catch {
-            // Expected: missing manifest error
             logger.log("Got expected error: \(error)")
         }
     }
@@ -378,7 +489,6 @@ final class SkipMiniAppModelTests: XCTestCase {
             let _ = try package.readManifest()
             XCTFail("Expected error for nonexistent package")
         } catch {
-            // Expected: cannot open package error
             logger.log("Got expected error: \(error)")
         }
     }
@@ -396,14 +506,12 @@ final class SkipMiniAppModelTests: XCTestCase {
         let package = MiniAppPackage(path: pkgPath)
         try package.extractToDirectory(at: extractDir.path)
 
-        // Verify extracted files exist
         let fm = FileManager.default
         XCTAssertTrue(fm.fileExists(atPath: extractDir.appendingPathComponent("manifest.json").path))
         XCTAssertTrue(fm.fileExists(atPath: extractDir.appendingPathComponent("app.js").path))
         XCTAssertTrue(fm.fileExists(atPath: extractDir.appendingPathComponent("app.css").path))
         XCTAssertTrue(fm.fileExists(atPath: extractDir.appendingPathComponent("pages/index/index.html").path))
 
-        // Verify content
         let jsContent = try String(contentsOf: extractDir.appendingPathComponent("app.js"), encoding: .utf8)
         XCTAssertEqual(jsContent, "console.log('app started');")
     }
@@ -470,7 +578,6 @@ final class SkipMiniAppModelTests: XCTestCase {
         XCTAssertEqual(lifecycle.globalState, .error)
         XCTAssertNotNil(lifecycle.currentError)
 
-        // Can recover from error
         lifecycle.show()
         XCTAssertEqual(lifecycle.globalState, .shown)
     }
@@ -524,7 +631,6 @@ final class SkipMiniAppModelTests: XCTestCase {
     }
 
     func testAllGlobalStates() throws {
-        // Verify all five states are distinct
         let states: [MiniAppGlobalState] = [.launched, .shown, .hidden, .error, .unloaded]
         XCTAssertEqual(states.count, 5)
         XCTAssertNotEqual(MiniAppGlobalState.launched, MiniAppGlobalState.shown)
@@ -534,7 +640,6 @@ final class SkipMiniAppModelTests: XCTestCase {
     }
 
     func testAllPageStates() throws {
-        // Verify all five states are distinct
         let states: [MiniAppPageState] = [.loaded, .ready, .shown, .hidden, .unloaded]
         XCTAssertEqual(states.count, 5)
         XCTAssertNotEqual(MiniAppPageState.loaded, MiniAppPageState.ready)
@@ -678,11 +783,11 @@ final class SkipMiniAppModelTests: XCTestCase {
 
         let pkgPath = tempDir.appendingPathComponent("multipage.ma").path
         let manifest = MiniAppManifest(
-            appID: "com.example.multipage",
-            appName: "Multi-Page App",
+            appId: "com.example.multipage",
+            name: "Multi-Page App",
             icons: [MiniAppIcon(src: "icon.png", sizes: "48x48")],
-            versionName: "1.0.0",
-            minPlatformVersion: "1.0.0",
+            version: MiniAppVersion(code: 1, name: "1.0.0"),
+            platformVersion: MiniAppPlatformVersion(minCode: 1),
             pages: ["pages/home/home", "pages/settings/settings", "pages/about/about"]
         )
 
@@ -702,13 +807,11 @@ final class SkipMiniAppModelTests: XCTestCase {
         let loaded = try package.readManifest()
         XCTAssertEqual(loaded.pages.count, 3)
 
-        // Verify each page
         for pagePath in loaded.pages {
             let html = try package.readPageHTML(pagePath: pagePath)
             XCTAssertNotNil(html, "HTML should exist for page: \(pagePath)")
         }
 
-        // Verify page content
         let homeHTML = try XCTUnwrap(package.readPageHTML(pagePath: "pages/home/home"))
         XCTAssertEqual(String(data: homeHTML, encoding: .utf8), "<html><body>Home</body></html>")
 
