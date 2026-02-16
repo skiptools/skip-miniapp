@@ -818,4 +818,285 @@ final class SkipMiniAppModelTests: XCTestCase {
         let settingsHTML = try XCTUnwrap(package.readPageHTML(pagePath: "pages/settings/settings"))
         XCTAssertEqual(String(data: settingsHTML, encoding: .utf8), "<html><body>Settings</body></html>")
     }
+
+    // MARK: - Runtime Tests
+
+    /// Helper to create a MiniApp package with the given app.js and page entries for runtime testing.
+    private func createRuntimePackage(appJS: String, pageEntries: [(path: String, js: String, html: String)] = []) throws -> (MiniAppPackage, MiniAppManifest) {
+        let tempDir = try createTempDirectory()
+        let pkgPath = tempDir.appendingPathComponent("runtime-test.ma").path
+
+        let pages = pageEntries.isEmpty ? ["pages/index/index"] : pageEntries.map { $0.path }
+        let manifest = MiniAppManifest(
+            appId: "com.example.runtime",
+            name: "Runtime Test",
+            icons: [MiniAppIcon(src: "icon.png")],
+            version: MiniAppVersion(code: 1, name: "1.0.0"),
+            platformVersion: MiniAppPlatformVersion(minCode: 1),
+            pages: pages
+        )
+
+        let builder = try MiniAppPackageBuilder(path: pkgPath)
+        try builder.addManifest(manifest)
+        try builder.addEntry(path: "app.js", string: appJS, compression: 0)
+
+        if pageEntries.isEmpty {
+            try builder.addEntry(path: "pages/index/index.html", string: "<html><body>Test</body></html>", compression: 0)
+            try builder.addEntry(path: "pages/index/index.js", string: "Page({})", compression: 0)
+        } else {
+            for entry in pageEntries {
+                try builder.addEntry(path: entry.path + ".html", string: entry.html, compression: 0)
+                try builder.addEntry(path: entry.path + ".js", string: entry.js, compression: 0)
+            }
+        }
+
+        try builder.finalize()
+
+        let package = MiniAppPackage(path: pkgPath)
+        return (package, manifest)
+    }
+
+    func testRuntimeAppCallbackRegistration() throws {
+        let appJS = """
+        var launched = false;
+        var shown = false;
+        var hidden = false;
+        App({
+            onLaunch: function(options) { launched = true; },
+            onShow: function() { shown = true; },
+            onHide: function() { hidden = true; }
+        });
+        """
+        let (pkg, manifest) = try createRuntimePackage(appJS: appJS)
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest)
+
+        // Before start, callbacks should not have fired
+        XCTAssertEqual(runtime.evaluateScriptAsBool("typeof launched !== 'undefined' ? launched : false"), false)
+
+        runtime.start()
+        XCTAssertEqual(runtime.evaluateScriptAsBool("launched"), true)
+        XCTAssertEqual(runtime.lifecycle.globalState, .launched)
+
+        runtime.fireAppShow()
+        XCTAssertEqual(runtime.evaluateScriptAsBool("shown"), true)
+        XCTAssertEqual(runtime.lifecycle.globalState, .shown)
+
+        runtime.fireAppHide()
+        XCTAssertEqual(runtime.evaluateScriptAsBool("hidden"), true)
+        XCTAssertEqual(runtime.lifecycle.globalState, .hidden)
+    }
+
+    func testRuntimePageLifecycle() throws {
+        let pageJS = """
+        var pageLoaded = false;
+        var pageShown = false;
+        var pageReady = false;
+        var pageHidden = false;
+        var pageUnloaded = false;
+        Page({
+            onLoad: function(options) { pageLoaded = true; },
+            onShow: function() { pageShown = true; },
+            onReady: function() { pageReady = true; },
+            onHide: function() { pageHidden = true; },
+            onUnload: function() { pageUnloaded = true; }
+        });
+        """
+        let pagePath = "pages/index/index"
+        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})", pageEntries: [
+            (path: pagePath, js: pageJS, html: "<html><body>Test</body></html>")
+        ])
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest)
+        runtime.start()
+
+        runtime.loadPage(pagePath: pagePath)
+        XCTAssertEqual(runtime.evaluateScriptAsBool("pageLoaded"), true)
+
+        runtime.firePageReady(pagePath: pagePath)
+        XCTAssertEqual(runtime.evaluateScriptAsBool("pageReady"), true)
+
+        runtime.firePageShow(pagePath: pagePath)
+        XCTAssertEqual(runtime.evaluateScriptAsBool("pageShown"), true)
+
+        runtime.firePageHide(pagePath: pagePath)
+        XCTAssertEqual(runtime.evaluateScriptAsBool("pageHidden"), true)
+
+        runtime.firePageUnload(pagePath: pagePath)
+        XCTAssertEqual(runtime.evaluateScriptAsBool("pageUnloaded"), true)
+    }
+
+    func testRuntimeConsoleLog() throws {
+        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest)
+        runtime.start()
+
+        // These should not crash
+        runtime.evaluateScript("console.log('test message')")
+        runtime.evaluateScript("console.warn('warning message')")
+        runtime.evaluateScript("console.error('error message')")
+        runtime.evaluateScript("console.info('info message')")
+        runtime.evaluateScript("console.debug('debug message')")
+        runtime.evaluateScript("console.log('multiple', 'arguments', 123)")
+    }
+
+    func testRuntimeStorage() throws {
+        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest)
+        runtime.start()
+
+        // Set a value
+        runtime.evaluateScript("miniapp.setStorageSync('testKey', 'testValue')")
+
+        // Get the value
+        let result = runtime.evaluateScript("miniapp.getStorageSync('testKey')")
+        XCTAssertEqual(result, "testValue")
+
+        // Override the value
+        runtime.evaluateScript("miniapp.setStorageSync('testKey', 'newValue')")
+        let result2 = runtime.evaluateScript("miniapp.getStorageSync('testKey')")
+        XCTAssertEqual(result2, "newValue")
+
+        // Remove the value
+        runtime.evaluateScript("miniapp.removeStorageSync('testKey')")
+        XCTAssertTrue(runtime.evaluateScriptIsUndefined("miniapp.getStorageSync('testKey')"))
+
+        // Get nonexistent key
+        XCTAssertTrue(runtime.evaluateScriptIsUndefined("miniapp.getStorageSync('nonexistent')"))
+    }
+
+    func testRuntimeNavigationCommand() throws {
+        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest)
+        runtime.start()
+
+        XCTAssertNil(runtime.pendingNavigation)
+
+        runtime.evaluateScript("miniapp.navigateTo({url: 'pages/detail/detail', query: 'id=42'})")
+
+        XCTAssertNotNil(runtime.pendingNavigation)
+        XCTAssertEqual(runtime.pendingNavigation?.action, .push)
+        XCTAssertEqual(runtime.pendingNavigation?.pagePath, "pages/detail/detail")
+        XCTAssertEqual(runtime.pendingNavigation?.query, "id=42")
+    }
+
+    func testRuntimeSystemInfo() throws {
+        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest)
+        runtime.start()
+
+        let jsonString = runtime.evaluateScript("JSON.stringify(miniapp.getSystemInfo())") ?? ""
+        let data = jsonString.data(using: .utf8) ?? Data()
+        let info = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        #if SKIP
+        XCTAssertEqual(info?["platform"] as? String, "android")
+        #else
+        XCTAssertEqual(info?["platform"] as? String, "ios")
+        #endif
+        XCTAssertEqual(info?["appId"] as? String, "com.example.runtime")
+        XCTAssertEqual(info?["version"] as? String, "1.0.0")
+    }
+
+    func testRuntimeTimers() throws {
+        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest)
+        runtime.start()
+
+        // Test that setTimeout returns a timer ID
+        let timerId = runtime.evaluateScriptAsDouble("setTimeout(function() {}, 1000)")
+        XCTAssertNotNil(timerId)
+        XCTAssertTrue((timerId ?? 0.0) > 0.0)
+
+        // Test clearTimeout doesn't crash
+        runtime.evaluateScript("clearTimeout(\(Int(timerId ?? 0.0)))")
+
+        // Test setInterval returns a timer ID
+        let intervalId = runtime.evaluateScriptAsDouble("setInterval(function() {}, 1000)")
+        XCTAssertNotNil(intervalId)
+        XCTAssertTrue((intervalId ?? 0.0) > 0.0)
+
+        // Test clearInterval doesn't crash
+        runtime.evaluateScript("clearInterval(\(Int(intervalId ?? 0.0)))")
+    }
+
+    func testRuntimeMultiPageNavigation() throws {
+        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})", pageEntries: [
+            (path: "pages/home/home", js: "Page({ onShow: function() { }, onHide: function() { } })", html: "<html><body>Home</body></html>"),
+            (path: "pages/detail/detail", js: "Page({ onLoad: function() { }, onHide: function() { } })", html: "<html><body>Detail</body></html>"),
+            (path: "pages/settings/settings", js: "Page({})", html: "<html><body>Settings</body></html>")
+        ])
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest)
+        runtime.start()
+
+        // Load initial page
+        runtime.loadPage(pagePath: "pages/home/home")
+        XCTAssertEqual(runtime.pageStack, ["pages/home/home"])
+        XCTAssertEqual(runtime.currentPage, "pages/home/home")
+
+        // Push detail page
+        let pushCommand = MiniAppNavigationCommand(action: .push, pagePath: "pages/detail/detail", query: "id=1")
+        runtime.processNavigation(pushCommand)
+        XCTAssertEqual(runtime.pageStack, ["pages/home/home", "pages/detail/detail"])
+        XCTAssertEqual(runtime.currentPage, "pages/detail/detail")
+
+        // Push settings page
+        let pushCommand2 = MiniAppNavigationCommand(action: .push, pagePath: "pages/settings/settings")
+        runtime.processNavigation(pushCommand2)
+        XCTAssertEqual(runtime.pageStack.count, 3)
+        XCTAssertEqual(runtime.currentPage, "pages/settings/settings")
+
+        // Pop back to detail
+        let popCommand = MiniAppNavigationCommand(action: .pop)
+        runtime.processNavigation(popCommand)
+        XCTAssertEqual(runtime.pageStack.count, 2)
+        XCTAssertEqual(runtime.currentPage, "pages/detail/detail")
+
+        // Pop back to home
+        let popCommand2 = MiniAppNavigationCommand(action: .pop)
+        runtime.processNavigation(popCommand2)
+        XCTAssertEqual(runtime.pageStack.count, 1)
+        XCTAssertEqual(runtime.currentPage, "pages/home/home")
+
+        // Pop on single page should be a no-op
+        let popCommand3 = MiniAppNavigationCommand(action: .pop)
+        runtime.processNavigation(popCommand3)
+        XCTAssertEqual(runtime.pageStack.count, 1)
+        XCTAssertEqual(runtime.currentPage, "pages/home/home")
+    }
+
+    func testRuntimeAppError() throws {
+        let appJS = """
+        var errorMessage = '';
+        App({
+            onError: function(msg) { errorMessage = msg; }
+        });
+        """
+        let (pkg, manifest) = try createRuntimePackage(appJS: appJS)
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest)
+        runtime.start()
+
+        runtime.fireAppError("something went wrong")
+
+        XCTAssertEqual(runtime.lifecycle.globalState, .error)
+        let result = runtime.evaluateScript("errorMessage")
+        XCTAssertEqual(result, "something went wrong")
+    }
+
+    func testRuntimeEvaluateScript() throws {
+        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest)
+        runtime.start()
+
+        // Test basic arithmetic
+        let result = runtime.evaluateScriptAsDouble("1 + 2 + 3")
+        XCTAssertEqual(result, 6.0)
+
+        // Test string operations
+        let result2 = runtime.evaluateScript("'hello' + ' ' + 'world'")
+        XCTAssertEqual(result2, "hello world")
+
+        // Test that global state persists
+        runtime.evaluateScript("var testGlobal = 42")
+        let result3 = runtime.evaluateScriptAsDouble("testGlobal")
+        XCTAssertEqual(result3, 42.0)
+    }
 }
