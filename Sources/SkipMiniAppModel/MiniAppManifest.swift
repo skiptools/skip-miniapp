@@ -1,10 +1,11 @@
 // Licensed under the GNU General Public License v3.0 with Linking Exception
 // SPDX-License-Identifier: LGPL-3.0-only WITH LGPL-3.0-linking-exception
+
 #if !SKIP_BRIDGE
 import Foundation
 
 /// W3C MiniApp Manifest as defined in the MiniApp Manifest specification.
-/// See: https://w3c.github.io/miniapp-manifest/
+/// See: https://www.w3.org/TR/miniapp-manifest/
 public struct MiniAppManifest: Codable, Hashable {
     /// Unique application identifier using reverse domain notation.
     public var appId: String

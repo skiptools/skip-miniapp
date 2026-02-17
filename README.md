@@ -1,8 +1,17 @@
 # SkipMiniApp
 
-A [Skip](https://skip.dev) framework for loading and running [W3C MiniApp](https://www.w3.org/TR/miniapp-packaging/) packages on iOS and Android. It provides a JavaScript runtime for executing app logic, a WebView-based page renderer, lifecycle management following the W3C MiniApp Lifecycle specification, and a native bridge exposing storage, navigation, and networking APIs to page scripts.
+A [Skip](https://skip.dev) framework for loading and running [W3C MiniApp](https://www.w3.org/TR/miniapp-packaging/) packages on iOS and Android. It provides a JavaScript runtime for executing app logic, a WebView-based page renderer, lifecycle management following the [W3C MiniApp Lifecycle](https://www.w3.org/TR/miniapp-lifecycle/) specification, and a native bridge exposing storage, navigation, and networking APIs to page scripts.
 
 > **Experimental**: This package is under active development and is not ready for production use. APIs are subject to change without notice.
+
+## W3C MiniApp Specifications
+
+This framework implements portions of the following W3C MiniApp specifications:
+
+- [MiniApp Packaging](https://www.w3.org/TR/miniapp-packaging/) — `.ma` ZIP-based package format with manifest and resource layout
+- [MiniApp Manifest](https://www.w3.org/TR/miniapp-manifest/) — JSON manifest schema for app metadata, pages, icons, and window configuration
+- [MiniApp Lifecycle](https://www.w3.org/TR/miniapp-lifecycle/) — Global and per-page lifecycle states and events
+- [MiniApp Addressing](https://www.w3.org/TR/miniapp-addressing/) — `miniapp://` URI scheme and HTTPS mapping
 
 ## Modules
 
