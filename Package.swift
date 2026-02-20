@@ -15,10 +15,10 @@ let package = Package(
         .package(url: "https://source.skip.tools/skip-foundation.git", from: "1.0.0"),
         .package(url: "https://source.skip.tools/skip-model.git", from: "1.0.0"),
         .package(url: "https://source.skip.tools/skip-ui.git", from: "1.0.0"),
-        .package(url: "https://source.skip.tools/skip-sql.git", branch: "main"),
-        .package(url: "https://source.skip.tools/skip-web.git", branch: "main"),
-        .package(url: "https://source.skip.tools/skip-script.git", branch: "main"),
-        .package(url: "https://source.skip.tools/skip-zip.git", branch: "main"),
+        .package(url: "https://source.skip.tools/skip-sql.git", "0.0.0"..<"2.0.0"),
+        .package(url: "https://source.skip.tools/skip-web.git", "0.0.0"..<"2.0.0"),
+        .package(url: "https://source.skip.tools/skip-script.git", "0.0.0"..<"2.0.0"),
+        .package(url: "https://source.skip.tools/skip-zip.git", "0.0.0"..<"2.0.0"),
     ],
     targets: [
         .target(name: "SkipMiniApp", dependencies: [
