@@ -43,8 +43,8 @@ public enum MiniAppNavigationAction: String, Equatable {
 /// Core runtime managing a JSContext for MiniApp app.js logic, lifecycle callbacks,
 /// native bridge functions, and page stack navigation.
 @Observable public class MiniAppRuntime {
-    /// The MiniApp package this runtime was created for.
-    public let package: MiniAppPackage
+    /// The MiniApp package reader this runtime was created for.
+    public let package: MiniAppPackageReader
 
     /// The manifest for this MiniApp.
     public let manifest: MiniAppManifest
@@ -75,8 +75,8 @@ public enum MiniAppNavigationAction: String, Equatable {
     /// The page path set before evaluating a page's JS so Page({...}) knows which page to register for.
     private var currentPagePath: String = ""
 
-    /// In-memory key-value storage for miniapp.getStorageSync/setStorageSync.
-    private var storage: [String: String] = [:]
+    /// Sandboxed key-value storage for miniapp.getStorageSync/setStorageSync.
+    public let storage: MiniAppStorage
 
     /// Timer tracking for setTimeout/setInterval.
     private var nextTimerId: Int = 1
@@ -89,9 +89,15 @@ public enum MiniAppNavigationAction: String, Equatable {
     // MARK: - Initialization
 
     /// Creates a new MiniAppRuntime with a JSContext and registers all global bridge functions.
-    public init(package: MiniAppPackage, manifest: MiniAppManifest) {
+    ///
+    /// - Parameters:
+    ///   - package: Source for reading app.js and page JS files.
+    ///   - manifest: The parsed MiniApp manifest.
+    ///   - storage: Storage backend. Defaults to in-memory storage scoped to this app's ID.
+    public init(package: MiniAppPackageReader, manifest: MiniAppManifest, storage: MiniAppStorage? = nil) {
         self.package = package
         self.manifest = manifest
+        self.storage = storage ?? MiniAppStorage(appId: manifest.appId, mode: .inMemory)
         self.context = JSContext()
         self.lifecycle = MiniAppLifecycle()
 
@@ -294,7 +300,7 @@ public enum MiniAppNavigationAction: String, Equatable {
             guard let key = args.first?.toString() else {
                 return JSValue(undefinedIn: ctx)
             }
-            if let value = runtime.storage[key] {
+            if let value = runtime.storage.get(key) {
                 return JSValue(string: value, in: ctx)
             }
             return JSValue(undefinedIn: ctx)
@@ -308,7 +314,7 @@ public enum MiniAppNavigationAction: String, Equatable {
             }
             let key = args[0].toString() ?? ""
             let value = args[1].toString() ?? ""
-            runtime.storage[key] = value
+            runtime.storage.set(key, value: value)
             return JSValue(undefinedIn: ctx)
         }
         miniapp.setObject(setStorageSyncFn, forKeyedSubscript: "setStorageSync")
@@ -318,10 +324,27 @@ public enum MiniAppNavigationAction: String, Equatable {
             guard let key = args.first?.toString() else {
                 return JSValue(undefinedIn: ctx)
             }
-            runtime.storage.removeValue(forKey: key)
+            runtime.storage.remove(key)
             return JSValue(undefinedIn: ctx)
         }
         miniapp.setObject(removeStorageSyncFn, forKeyedSubscript: "removeStorageSync")
+
+        // miniapp.getStorageKeys() - list all stored keys
+        let getStorageKeysFn = JSValue(newFunctionIn: context) { ctx, obj, args in
+            let keys = runtime.storage.keys()
+            // Build a JSON array string and parse it in the JS context
+            let jsonKeys = keys.map { "\"\($0.replacingOccurrences(of: "\"", with: "\\\""))\"" }
+            let arrayLiteral = "[" + jsonKeys.joined(separator: ",") + "]"
+            return ctx.evaluateScript(arrayLiteral) ?? JSValue(undefinedIn: ctx)
+        }
+        miniapp.setObject(getStorageKeysFn, forKeyedSubscript: "getStorageKeys")
+
+        // miniapp.clearStorage() - remove all stored data
+        let clearStorageFn = JSValue(newFunctionIn: context) { ctx, obj, args in
+            runtime.storage.clear()
+            return JSValue(undefinedIn: ctx)
+        }
+        miniapp.setObject(clearStorageFn, forKeyedSubscript: "clearStorage")
 
         // miniapp.navigateTo({url, query})
         let navigateToFn = JSValue(newFunctionIn: context) { ctx, obj, args in
