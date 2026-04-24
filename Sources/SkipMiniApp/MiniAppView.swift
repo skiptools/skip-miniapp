@@ -16,6 +16,7 @@ import SkipWeb
 public struct MiniAppView: View {
     private let packagePath: String?
     private let directoryURL: URL?
+    private let storageMode: MiniAppStorageMode
     @State private var manifest: MiniAppManifest?
     @State private var runtime: MiniAppRuntime?
     @State private var startPageURL: URL?
@@ -25,9 +26,10 @@ public struct MiniAppView: View {
     @State private var extractDir: URL?
 
     /// Load a MiniApp from a `.ma` ZIP package file.
-    public init(packagePath: String) {
+    public init(packagePath: String, storageMode: MiniAppStorageMode = .inMemory) {
         self.packagePath = packagePath
         self.directoryURL = nil
+        self.storageMode = storageMode
     }
 
     /// Load a MiniApp from an expanded directory (local file URL or bundle asset URL).
@@ -35,9 +37,15 @@ public struct MiniAppView: View {
     /// The directory must contain a `manifest.json` and the files referenced by it.
     /// On Android, files are copied from the bundle to a temp directory so that the
     /// WebView can load them via file:// URLs.
-    public init(directoryURL: URL) {
+    ///
+    /// - Parameters:
+    ///   - directoryURL: URL to the expanded MiniApp directory.
+    ///   - storageMode: How storage is persisted. Use `.persistent(baseDirectory:)` to
+    ///     retain data across launches. Defaults to `.inMemory`.
+    public init(directoryURL: URL, storageMode: MiniAppStorageMode = .inMemory) {
         self.packagePath = nil
         self.directoryURL = directoryURL
+        self.storageMode = storageMode
     }
 
     public var body: some View {
@@ -294,7 +302,8 @@ public struct MiniAppView: View {
         self.manifest = manifest
         self.extractDir = servingDir
 
-        let rt = MiniAppRuntime(package: package, manifest: manifest)
+        let storage = MiniAppStorage(appId: manifest.appId, mode: storageMode)
+        let rt = MiniAppRuntime(package: package, manifest: manifest, storage: storage)
         rt.start()
         rt.fireAppShow()
 
