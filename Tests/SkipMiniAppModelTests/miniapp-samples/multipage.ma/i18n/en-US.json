@@ -1,0 +1,8 @@
+{
+    "app.title": "Multi-Page MiniApp",
+    "home.welcome": "Welcome",
+    "detail.title": "Detail",
+    "settings.title": "Settings",
+    "settings.notifications": "Notifications",
+    "settings.language": "Language"
+}

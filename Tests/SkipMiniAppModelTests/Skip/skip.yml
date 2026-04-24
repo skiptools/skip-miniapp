@@ -1,3 +1,7 @@
 # Configuration file for Skip (https://skip.dev) project
-#build:
-#  contents:
+skip:
+  resources:
+    - path: 'Resources'
+      mode: 'process'
+    - path: 'miniapp-samples'
+      mode: 'copy'
