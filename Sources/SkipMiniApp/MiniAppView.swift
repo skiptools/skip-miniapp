@@ -167,8 +167,10 @@ public struct MiniAppView: View {
                 var id = ++_callId;
                 if (callback) { _callbacks[id] = callback; }
                 try {
+                    // Pass a JS object (not a JSON string) to postMessage so that
+                    // SkipWeb's Android polyfill only JSON-encodes it once.
                     webkit.messageHandlers.miniappBridge.postMessage(
-                        JSON.stringify({ callId: id, action: action, data: data })
+                        { callId: id, action: action, data: data }
                     );
                 } catch(e) { /* bridge not available */ }
             }
@@ -333,10 +335,22 @@ public struct MiniAppView: View {
     @MainActor
     private func handleBridgeMessage(_ message: WebViewMessage) {
         guard let runtime = runtime else { return }
-        guard let bodyString = message.body as? String,
-              let bodyData = bodyString.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any],
-              let action = json["action"] as? String,
+
+        // On iOS, WKWebView auto-converts JS objects to NSDictionary.
+        // On Android, SkipWeb's router parses the JSON into a dictionary.
+        // Support both: try as dictionary first, fall back to string parsing.
+        let json: [String: Any]
+        if let dict = message.body as? [String: Any] {
+            json = dict
+        } else if let bodyString = message.body as? String,
+                  let bodyData = bodyString.data(using: .utf8),
+                  let parsed = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] {
+            json = parsed
+        } else {
+            return
+        }
+
+        guard let action = json["action"] as? String,
               let data = json["data"] as? [String: Any] else {
             return
         }
