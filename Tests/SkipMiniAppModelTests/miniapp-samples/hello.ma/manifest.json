@@ -1,0 +1,25 @@
+{
+    "app_id": "org.example.hello",
+    "name": "Hello MiniApp",
+    "short_name": "Hello",
+    "description": "A simple hello world MiniApp with lifecycle hooks",
+    "icons": [
+        { "src": "common/images/icon.png", "sizes": "48x48", "label": "App Icon" }
+    ],
+    "version": { "code": 2, "name": "1.1.0" },
+    "platform_version": { "min_code": 1, "target_code": 2, "release_type": "Release" },
+    "pages": [
+        "pages/index/index"
+    ],
+    "dir": "ltr",
+    "lang": "en-US",
+    "color_scheme": "auto",
+    "window": {
+        "navigation_bar_title_text": "Hello World",
+        "navigation_bar_background_color": "#4A90D9",
+        "navigation_bar_text_style": "white",
+        "background_color": "#F5F5F5",
+        "orientation": "portrait",
+        "fullscreen": false
+    }
+}

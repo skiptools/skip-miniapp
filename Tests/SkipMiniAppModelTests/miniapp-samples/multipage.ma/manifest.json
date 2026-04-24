@@ -1,0 +1,46 @@
+{
+    "dir": "ltr",
+    "lang": "en-US",
+    "app_id": "org.example.multipage",
+    "name": "Multi-Page MiniApp",
+    "short_name": "MultiPage",
+    "description": "A MiniApp with multiple pages, i18n, common resources, widgets, and permissions",
+    "icons": [
+        { "src": "common/images/icon-small.png", "sizes": "48x48", "label": "Small icon" },
+        { "src": "common/images/icon-large.png", "sizes": "192x192", "label": "Large icon" }
+    ],
+    "version": { "code": 10, "name": "2.3.1" },
+    "platform_version": {
+        "min_code": 2,
+        "target_code": 5,
+        "release_type": "Release"
+    },
+    "pages": [
+        "pages/index/index",
+        "pages/detail/detail",
+        "pages/settings/settings"
+    ],
+    "color_scheme": "light",
+    "device_type": ["phone", "tablet"],
+    "window": {
+        "navigation_bar_background_color": "#FFFFFF",
+        "navigation_bar_text_style": "black",
+        "navigation_bar_title_text": "MultiPage App",
+        "navigation_style": "default",
+        "background_color": "#F0F0F0",
+        "background_text_style": "dark",
+        "enable_pull_down_refresh": true,
+        "on_reach_bottom_distance": 50,
+        "orientation": "portrait",
+        "fullscreen": false,
+        "design_width": 750,
+        "auto_design_width": false
+    },
+    "widgets": [
+        { "name": "Quick Notes", "path": "widgets/notes/notes", "min_code": 3 }
+    ],
+    "req_permissions": [
+        { "name": "system.permission.LOCATION", "reason": "Show your position on the map" },
+        { "name": "system.permission.CAMERA", "reason": "Scan QR codes" }
+    ]
+}

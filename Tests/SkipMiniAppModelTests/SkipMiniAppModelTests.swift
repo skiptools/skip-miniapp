@@ -1099,4 +1099,356 @@ final class SkipMiniAppModelTests: XCTestCase {
         let result3 = runtime.evaluateScriptAsDouble("testGlobal")
         XCTAssertEqual(result3, 42.0)
     }
+
+    // MARK: - Expanded MiniApp Resource Tests
+    //
+    // These tests load from the miniapp-samples/ copy-resource directory which preserves the
+    // W3C-compliant directory structure (manifest.json, pages/, common/, i18n/). SPM's
+    // .copy() is used because .process() flattens filenames and conflicts on duplicate
+    // names like manifest.json across multiple mini-apps.
+    //
+    // On Android, resources inside an APK are not accessible via FileManager. All
+    // existence checks use Data(contentsOf:) on URLs instead of fm.fileExists().
+
+    /// Resolve the root URL for a specific expanded MiniApp within the miniapp-samples
+    /// copy-resource directory. Uses a known resource file (TestData.json) to locate the
+    /// bundle's resource base URL, then appends the miniapp-samples path.
+    private func miniAppURL(_ name: String) throws -> URL {
+        // Locate the miniapp-samples copy-resource relative to a known processed resource.
+        // On macOS (SPM), processed resources are at the bundle root alongside miniapp-samples/:
+        //   .../SkipMiniAppModelTests_SkipMiniAppModelTests.bundle/TestData.json
+        //   .../SkipMiniAppModelTests_SkipMiniAppModelTests.bundle/miniapp-samples/...
+        // On Android (Gradle), processed resources are in a Resources/ subdirectory
+        // under the module package path, while copy resources are siblings:
+        //   .../skip/mini/app/model/Resources/TestData.json
+        //   .../skip/mini/app/model/miniapp-samples/...
+        let anchor = try XCTUnwrap(Bundle.module.url(forResource: "TestData", withExtension: "json"),
+                                   "TestData.json not found in bundle")
+        var base = anchor.deletingLastPathComponent()
+        let probe = base.appendingPathComponent("miniapp-samples").appendingPathComponent(name)
+        // Probe for any known file to confirm this is the right level
+        if !resourceExists(at: probe.appendingPathComponent("app.js"))
+            && !resourceExists(at: probe.appendingPathComponent("manifest.json")) {
+            // Go up one more level (Android layout: resources are in Resources/ subdir)
+            base = base.deletingLastPathComponent()
+        }
+        return base.appendingPathComponent("miniapp-samples").appendingPathComponent(name)
+    }
+
+    /// Check whether a resource URL is loadable (works for both disk files and APK assets).
+    private func resourceExists(at url: URL) -> Bool {
+        return (try? Data(contentsOf: url))?.isEmpty == false
+    }
+
+    // MARK: Structure validation
+
+    func testExpandedMinimalStructure() throws {
+        let root = try miniAppURL("minimal.ma")
+
+        // Required files per W3C MiniApp Packaging spec
+        XCTAssertTrue(resourceExists(at: root.appendingPathComponent("manifest.json")),
+                      "manifest.json is required")
+        XCTAssertTrue(resourceExists(at: root.appendingPathComponent("app.js")),
+                      "app.js is required")
+        XCTAssertTrue(resourceExists(at: root.appendingPathComponent("app.css")),
+                      "app.css is required")
+        XCTAssertTrue(resourceExists(at: root.appendingPathComponent("pages/index/index.html")),
+                      "At least one page HTML is required")
+    }
+
+    func testExpandedMultipageStructure() throws {
+        let root = try miniAppURL("multipage.ma")
+
+        // Core files
+        XCTAssertTrue(resourceExists(at: root.appendingPathComponent("manifest.json")))
+        XCTAssertTrue(resourceExists(at: root.appendingPathComponent("app.js")))
+        XCTAssertTrue(resourceExists(at: root.appendingPathComponent("app.css")))
+
+        // All three pages
+        for page in ["index", "detail", "settings"] {
+            XCTAssertTrue(resourceExists(at: root.appendingPathComponent("pages/\(page)/\(page).html")),
+                          "\(page).html should exist")
+            XCTAssertTrue(resourceExists(at: root.appendingPathComponent("pages/\(page)/\(page).js")),
+                          "\(page).js should exist")
+        }
+    }
+
+    func testExpandedInvalidNoManifest() throws {
+        let root = try miniAppURL("invalid-no-manifest.ma")
+
+        XCTAssertFalse(resourceExists(at: root.appendingPathComponent("manifest.json")),
+                       "This test app intentionally lacks a manifest")
+        XCTAssertTrue(resourceExists(at: root.appendingPathComponent("app.js")))
+    }
+
+    // MARK: Manifest loading from expanded directory
+
+    func testLoadManifestFromExpandedMinimal() throws {
+        let manifestURL = try miniAppURL("minimal.ma").appendingPathComponent("manifest.json")
+        let data = try Data(contentsOf: manifestURL)
+        let manifest = try JSONDecoder().decode(MiniAppManifest.self, from: data)
+
+        XCTAssertEqual(manifest.appId, "org.example.minimal")
+        XCTAssertEqual(manifest.name, "Minimal MiniApp")
+        XCTAssertEqual(manifest.version.code, 1)
+        XCTAssertEqual(manifest.version.name, "1.0.0")
+        XCTAssertEqual(manifest.platformVersion.minCode, 1)
+        XCTAssertEqual(manifest.pages, ["pages/index/index"])
+        XCTAssertEqual(manifest.icons.count, 1)
+        XCTAssertNil(manifest.shortName)
+        XCTAssertNil(manifest.description)
+        XCTAssertNil(manifest.window)
+        XCTAssertNil(manifest.widgets)
+        XCTAssertNil(manifest.reqPermissions)
+    }
+
+    func testLoadManifestFromExpandedHello() throws {
+        let manifestURL = try miniAppURL("hello.ma").appendingPathComponent("manifest.json")
+        let data = try Data(contentsOf: manifestURL)
+        let manifest = try JSONDecoder().decode(MiniAppManifest.self, from: data)
+
+        XCTAssertEqual(manifest.appId, "org.example.hello")
+        XCTAssertEqual(manifest.name, "Hello MiniApp")
+        XCTAssertEqual(manifest.shortName, "Hello")
+        XCTAssertEqual(manifest.description, "A simple hello world MiniApp with lifecycle hooks")
+        XCTAssertEqual(manifest.version.code, 2)
+        XCTAssertEqual(manifest.version.name, "1.1.0")
+        XCTAssertEqual(manifest.platformVersion.minCode, 1)
+        XCTAssertEqual(manifest.platformVersion.targetCode, 2)
+        XCTAssertEqual(manifest.platformVersion.releaseType, "Release")
+        XCTAssertEqual(manifest.dir, "ltr")
+        XCTAssertEqual(manifest.lang, "en-US")
+        XCTAssertEqual(manifest.colorScheme, "auto")
+
+        let window = try XCTUnwrap(manifest.window)
+        XCTAssertEqual(window.navigationBarTitleText, "Hello World")
+        XCTAssertEqual(window.navigationBarBackgroundColor, "#4A90D9")
+        XCTAssertEqual(window.navigationBarTextStyle, "white")
+        XCTAssertEqual(window.backgroundColor, "#F5F5F5")
+        XCTAssertEqual(window.orientation, "portrait")
+        XCTAssertEqual(window.fullscreen, false)
+    }
+
+    func testLoadManifestFromExpandedMultipage() throws {
+        let manifestURL = try miniAppURL("multipage.ma").appendingPathComponent("manifest.json")
+        let data = try Data(contentsOf: manifestURL)
+        let manifest = try JSONDecoder().decode(MiniAppManifest.self, from: data)
+
+        XCTAssertEqual(manifest.appId, "org.example.multipage")
+        XCTAssertEqual(manifest.name, "Multi-Page MiniApp")
+        XCTAssertEqual(manifest.shortName, "MultiPage")
+        XCTAssertEqual(manifest.pages.count, 3)
+        XCTAssertEqual(manifest.pages[0], "pages/index/index")
+        XCTAssertEqual(manifest.pages[1], "pages/detail/detail")
+        XCTAssertEqual(manifest.pages[2], "pages/settings/settings")
+        XCTAssertEqual(manifest.icons.count, 2)
+        XCTAssertEqual(manifest.icons[0].label, "Small icon")
+        XCTAssertEqual(manifest.deviceType, ["phone", "tablet"])
+
+        let widgets = try XCTUnwrap(manifest.widgets)
+        XCTAssertEqual(widgets.count, 1)
+        XCTAssertEqual(widgets[0].name, "Quick Notes")
+        XCTAssertEqual(widgets[0].minCode, 3)
+
+        let perms = try XCTUnwrap(manifest.reqPermissions)
+        XCTAssertEqual(perms.count, 2)
+        XCTAssertEqual(perms[0].name, "system.permission.LOCATION")
+        XCTAssertEqual(perms[1].name, "system.permission.CAMERA")
+
+        let window = try XCTUnwrap(manifest.window)
+        XCTAssertEqual(window.enablePullDownRefresh, true)
+        XCTAssertEqual(window.onReachBottomDistance, 50)
+        XCTAssertEqual(window.designWidth, 750)
+        XCTAssertEqual(window.autoDesignWidth, false)
+    }
+
+    func testLoadManifestFromExpandedBadManifest() throws {
+        let manifestURL = try miniAppURL("invalid-bad-manifest.ma").appendingPathComponent("manifest.json")
+        let data = try Data(contentsOf: manifestURL)
+
+        do {
+            let _ = try JSONDecoder().decode(MiniAppManifest.self, from: data)
+            XCTFail("Decoding a manifest missing required fields should throw")
+        } catch {
+            logger.log("Got expected decode error: \(error)")
+        }
+    }
+
+    // MARK: Page content introspection
+
+    func testReadPageHTMLFromExpanded() throws {
+        let root = try miniAppURL("hello.ma")
+        let htmlURL = root.appendingPathComponent("pages/index/index.html")
+        let html = try String(contentsOf: htmlURL, encoding: .utf8)
+
+        XCTAssertTrue(html.contains("<!DOCTYPE html>"))
+        XCTAssertTrue(html.contains("<h1>Hello, MiniApp!</h1>"))
+        XCTAssertTrue(html.contains("<meta charset=\"utf-8\">"))
+    }
+
+    func testReadPageJSFromExpanded() throws {
+        let root = try miniAppURL("hello.ma")
+        let jsURL = root.appendingPathComponent("pages/index/index.js")
+        let js = try String(contentsOf: jsURL, encoding: .utf8)
+
+        XCTAssertTrue(js.contains("Page("))
+        XCTAssertTrue(js.contains("onLoad"))
+        XCTAssertTrue(js.contains("onShow"))
+    }
+
+    func testReadAppJSFromExpanded() throws {
+        let root = try miniAppURL("hello.ma")
+        let jsURL = root.appendingPathComponent("app.js")
+        let js = try String(contentsOf: jsURL, encoding: .utf8)
+
+        XCTAssertTrue(js.contains("App("))
+        XCTAssertTrue(js.contains("onLaunch"))
+        XCTAssertTrue(js.contains("onShow"))
+        XCTAssertTrue(js.contains("onHide"))
+    }
+
+    // MARK: i18n resource loading
+
+    func testLoadI18nResources() throws {
+        let root = try miniAppURL("multipage.ma")
+
+        let enURL = root.appendingPathComponent("i18n/en-US.json")
+        let enData = try Data(contentsOf: enURL)
+        let en = try JSONSerialization.jsonObject(with: enData) as? [String: String]
+        XCTAssertEqual(en?["app.title"], "Multi-Page MiniApp")
+        XCTAssertEqual(en?["home.welcome"], "Welcome")
+        XCTAssertEqual(en?["settings.language"], "Language")
+
+        let zhURL = root.appendingPathComponent("i18n/zh-Hans.json")
+        let zhData = try Data(contentsOf: zhURL)
+        let zh = try JSONSerialization.jsonObject(with: zhData) as? [String: String]
+        XCTAssertNotNil(zh?["app.title"])
+        XCTAssertNotNil(zh?["home.welcome"])
+    }
+
+    // MARK: Cross-reference manifest pages with file system
+
+    func testManifestPagesMatchResources() throws {
+        let root = try miniAppURL("multipage.ma")
+        let manifestURL = root.appendingPathComponent("manifest.json")
+        let data = try Data(contentsOf: manifestURL)
+        let manifest = try JSONDecoder().decode(MiniAppManifest.self, from: data)
+
+        // Every page listed in the manifest must have a loadable .html resource
+        for pagePath in manifest.pages {
+            let htmlURL = root.appendingPathComponent(pagePath + ".html")
+            XCTAssertTrue(resourceExists(at: htmlURL),
+                          "Page \(pagePath) listed in manifest but \(pagePath).html not loadable")
+        }
+    }
+
+    func testManifestIconsReferenceExistingResources() throws {
+        let root = try miniAppURL("multipage.ma")
+        let manifestURL = root.appendingPathComponent("manifest.json")
+        let data = try Data(contentsOf: manifestURL)
+        let manifest = try JSONDecoder().decode(MiniAppManifest.self, from: data)
+
+        for icon in manifest.icons {
+            let iconURL = root.appendingPathComponent(icon.src)
+            XCTAssertTrue(resourceExists(at: iconURL),
+                          "Icon \(icon.src) referenced in manifest but not loadable")
+        }
+    }
+
+    // MARK: Encoding roundtrip from expanded resource
+
+    func testManifestRoundtripFromExpandedResource() throws {
+        let manifestURL = try miniAppURL("multipage.ma").appendingPathComponent("manifest.json")
+        let originalData = try Data(contentsOf: manifestURL)
+        let manifest = try JSONDecoder().decode(MiniAppManifest.self, from: originalData)
+
+        // Re-encode and decode; result should be equal
+        let reencoded = try JSONEncoder().encode(manifest)
+        let roundtripped = try JSONDecoder().decode(MiniAppManifest.self, from: reencoded)
+        XCTAssertEqual(manifest, roundtripped)
+    }
+
+    // MARK: Build .ma package from expanded directory
+
+    func testBuildPackageFromExpandedMinimal() throws {
+        let root = try miniAppURL("minimal.ma")
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        // Read manifest from expanded directory
+        let manifestData = try Data(contentsOf: root.appendingPathComponent("manifest.json"))
+        let manifest = try JSONDecoder().decode(MiniAppManifest.self, from: manifestData)
+
+        // Build a .ma package from the expanded files
+        let pkgPath = tempDir.appendingPathComponent("built.ma").path
+        let builder = try MiniAppPackageBuilder(path: pkgPath)
+        try builder.addManifest(manifest)
+        try builder.addEntry(path: "app.js",
+                             data: try Data(contentsOf: root.appendingPathComponent("app.js")),
+                             compression: 0)
+        try builder.addEntry(path: "app.css",
+                             data: try Data(contentsOf: root.appendingPathComponent("app.css")),
+                             compression: 0)
+        try builder.addEntry(path: "pages/index/index.html",
+                             data: try Data(contentsOf: root.appendingPathComponent("pages/index/index.html")),
+                             compression: 0)
+        try builder.finalize()
+
+        // Verify the built package can be read back
+        let package = MiniAppPackage(path: pkgPath)
+        let loaded = try package.readManifest()
+        XCTAssertEqual(loaded.appId, "org.example.minimal")
+        XCTAssertEqual(loaded.pages, ["pages/index/index"])
+
+        let entries = try package.listEntries()
+        XCTAssertTrue(entries.contains("manifest.json"))
+        XCTAssertTrue(entries.contains("app.js"))
+        XCTAssertTrue(entries.contains("app.css"))
+        XCTAssertTrue(entries.contains("pages/index/index.html"))
+    }
+
+    func testBuildPackageFromExpandedMultipage() throws {
+        let root = try miniAppURL("multipage.ma")
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let manifestData = try Data(contentsOf: root.appendingPathComponent("manifest.json"))
+        let manifest = try JSONDecoder().decode(MiniAppManifest.self, from: manifestData)
+
+        let pkgPath = tempDir.appendingPathComponent("multipage-built.ma").path
+        let builder = try MiniAppPackageBuilder(path: pkgPath)
+        try builder.addManifest(manifest)
+        try builder.addEntry(path: "app.js",
+                             data: try Data(contentsOf: root.appendingPathComponent("app.js")),
+                             compression: 0)
+        try builder.addEntry(path: "app.css",
+                             data: try Data(contentsOf: root.appendingPathComponent("app.css")),
+                             compression: 0)
+
+        // Add all page files
+        for pageName in ["index", "detail", "settings"] {
+            let pageDir = root.appendingPathComponent("pages/\(pageName)")
+            let htmlURL = pageDir.appendingPathComponent("\(pageName).html")
+            try builder.addEntry(path: "pages/\(pageName)/\(pageName).html",
+                                 data: try Data(contentsOf: htmlURL),
+                                 compression: 0)
+            let jsURL = pageDir.appendingPathComponent("\(pageName).js")
+            if let jsData = try? Data(contentsOf: jsURL), !jsData.isEmpty {
+                try builder.addEntry(path: "pages/\(pageName)/\(pageName).js",
+                                     data: jsData,
+                                     compression: 0)
+            }
+        }
+        try builder.finalize()
+
+        // Verify the built package
+        let package = MiniAppPackage(path: pkgPath)
+        let loaded = try package.readManifest()
+        XCTAssertEqual(loaded.pages.count, 3)
+
+        for pagePath in loaded.pages {
+            let html = try package.readPageHTML(pagePath: pagePath)
+            XCTAssertNotNil(html, "Page \(pagePath) HTML should be readable from built package")
+        }
+    }
 }

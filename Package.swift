@@ -40,7 +40,7 @@ let package = Package(
         .testTarget(name: "SkipMiniAppModelTests", dependencies: [
             "SkipMiniAppModel",
             .product(name: "SkipTest", package: "skip")
-        ], resources: [.process("Resources")], plugins: [.plugin(name: "skipstone", package: "skip")]),
+        ], resources: [.process("Resources"), .copy("miniapp-samples")], plugins: [.plugin(name: "skipstone", package: "skip")]),
     ]
 )
 

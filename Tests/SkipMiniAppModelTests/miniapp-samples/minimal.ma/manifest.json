@@ -1,0 +1,12 @@
+{
+    "app_id": "org.example.minimal",
+    "name": "Minimal MiniApp",
+    "icons": [
+        { "src": "common/images/icon.png", "sizes": "48x48" }
+    ],
+    "version": { "code": 1, "name": "1.0.0" },
+    "platform_version": { "min_code": 1 },
+    "pages": [
+        "pages/index/index"
+    ]
+}
