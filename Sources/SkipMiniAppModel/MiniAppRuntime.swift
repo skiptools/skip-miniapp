@@ -9,6 +9,21 @@ import SkipScript
 
 private let logger = Logger(subsystem: "SkipMiniApp", category: "Runtime")
 
+/// A single log entry captured from `skip.log()` calls in a MiniApp.
+public struct MiniAppLogEntry: Identifiable {
+    public let id: Int
+    public let timestamp: Date
+    public let level: String
+    public let message: String
+
+    public init(id: Int, timestamp: Date = Date(), level: String = "info", message: String) {
+        self.id = id
+        self.timestamp = timestamp
+        self.level = level
+        self.message = message
+    }
+}
+
 /// Holds the onLoad/onShow/onReady/onHide/onUnload JSValue callbacks for one page.
 /// Internal — JSValue is not a bridgeable type.
 class PageCallbackSet {
@@ -75,8 +90,17 @@ public enum MiniAppNavigationAction: String, Equatable {
     /// The page path set before evaluating a page's JS so Page({...}) knows which page to register for.
     private var currentPagePath: String = ""
 
+    /// The JavaScript namespace name for the bridge API (e.g. "miniapp" or "skip").
+    public let namespace: String
+
     /// Sandboxed key-value storage for miniapp.getStorageSync/setStorageSync.
     public let storage: MiniAppStorage
+
+    /// Log entries captured from `skip.log()` calls, available for host UI.
+    public var logEntries: [MiniAppLogEntry] = []
+
+    /// Counter for generating unique log entry IDs.
+    private var nextLogId: Int = 1
 
     /// Timer tracking for setTimeout/setInterval.
     private var nextTimerId: Int = 1
@@ -88,21 +112,49 @@ public enum MiniAppNavigationAction: String, Equatable {
 
     // MARK: - Initialization
 
+    /// The modules registered with this runtime.
+    public let modules: [MiniAppModuleType]
+
     /// Creates a new MiniAppRuntime with a JSContext and registers all global bridge functions.
     ///
     /// - Parameters:
     ///   - package: Source for reading app.js and page JS files.
     ///   - manifest: The parsed MiniApp manifest.
     ///   - storage: Storage backend. Defaults to in-memory storage scoped to this app's ID.
-    public init(package: MiniAppPackageReader, manifest: MiniAppManifest, storage: MiniAppStorage? = nil) {
+    ///   - namespace: The JavaScript global name for the bridge API. Defaults to `"miniapp"`.
+    ///   - modules: API modules to register. Each module provides JS bridge code, JSContext APIs, and message handlers.
+    public init(package: MiniAppPackageReader, manifest: MiniAppManifest, storage: MiniAppStorage? = nil, namespace: String = "miniapp", modules: [MiniAppModuleType]? = nil) {
         self.package = package
         self.manifest = manifest
-        self.storage = storage ?? MiniAppStorage(appId: manifest.appId, mode: .inMemory)
+        self.namespace = namespace
+        // Default to all built-in modules when none are specified
+        self.modules = modules ?? [MiniAppModuleType(MiniAppFileSystemModule()), MiniAppModuleType(MiniAppNetworkModule()), MiniAppModuleType(MiniAppLoggingModule())]
+        // Derive storage from the FileSystemModule if present, otherwise use provided or default
+        if let fsModule = self.modules.first(where: { $0.module is MiniAppFileSystemModule })?.module as? MiniAppFileSystemModule {
+            self.storage = storage ?? MiniAppStorage(appId: manifest.appId, mode: fsModule.storageMode)
+        } else {
+            self.storage = storage ?? MiniAppStorage(appId: manifest.appId, mode: .inMemory)
+        }
         self.context = JSContext()
         self.lifecycle = MiniAppLifecycle()
 
         registerGlobals()
     }
+
+    /// Append a log entry to the runtime's log.
+    public func addLogEntry(level: String = "info", message: String) {
+        let entry = MiniAppLogEntry(id: nextLogId, level: level, message: message)
+        nextLogId += 1
+        logEntries.append(entry)
+    }
+
+    // MARK: - Module Helpers
+
+    /// The JSContext for module registration. Internal to the framework.
+    var jsContext: JSContext { return context }
+
+    /// The namespace JSValue for module function registration. Set during registerMiniAppNamespace().
+    var namespaceObject: JSValue?
 
     // MARK: - Global Registration
 
@@ -276,12 +328,12 @@ public enum MiniAppNavigationAction: String, Equatable {
         context.setObject(clearIntervalFn, forKeyedSubscript: "clearInterval")
     }
 
-    /// Register the miniapp.* namespace with system info, storage, navigation, and request APIs.
+    /// Register the bridge namespace with core APIs (getSystemInfo, navigation) and delegate to modules.
     private func registerMiniAppNamespace() {
         let miniapp = JSValue(newObjectIn: context)
         let runtime = self
 
-        // miniapp.getSystemInfo()
+        // --- Core: getSystemInfo() ---
         let getSystemInfoFn = JSValue(newFunctionIn: context) { ctx, obj, args in
             let info = JSValue(newObjectIn: ctx)
             #if SKIP
@@ -295,75 +347,19 @@ public enum MiniAppNavigationAction: String, Equatable {
         }
         miniapp.setObject(getSystemInfoFn, forKeyedSubscript: "getSystemInfo")
 
-        // miniapp.getStorageSync(key)
-        let getStorageSyncFn = JSValue(newFunctionIn: context) { ctx, obj, args in
-            guard let key = args.first?.toString() else {
-                return JSValue(undefinedIn: ctx)
-            }
-            if let value = runtime.storage.get(key) {
-                return JSValue(string: value, in: ctx)
-            }
-            return JSValue(undefinedIn: ctx)
-        }
-        miniapp.setObject(getStorageSyncFn, forKeyedSubscript: "getStorageSync")
-
-        // miniapp.setStorageSync(key, value)
-        let setStorageSyncFn = JSValue(newFunctionIn: context) { ctx, obj, args in
-            guard args.count >= 2 else {
-                return JSValue(undefinedIn: ctx)
-            }
-            let key = args[0].toString() ?? ""
-            let value = args[1].toString() ?? ""
-            runtime.storage.set(key, value: value)
-            return JSValue(undefinedIn: ctx)
-        }
-        miniapp.setObject(setStorageSyncFn, forKeyedSubscript: "setStorageSync")
-
-        // miniapp.removeStorageSync(key)
-        let removeStorageSyncFn = JSValue(newFunctionIn: context) { ctx, obj, args in
-            guard let key = args.first?.toString() else {
-                return JSValue(undefinedIn: ctx)
-            }
-            runtime.storage.remove(key)
-            return JSValue(undefinedIn: ctx)
-        }
-        miniapp.setObject(removeStorageSyncFn, forKeyedSubscript: "removeStorageSync")
-
-        // miniapp.getStorageKeys() - list all stored keys
-        let getStorageKeysFn = JSValue(newFunctionIn: context) { ctx, obj, args in
-            let keys = runtime.storage.keys()
-            // Build a JSON array string and parse it in the JS context
-            let jsonKeys = keys.map { "\"\($0.replacingOccurrences(of: "\"", with: "\\\""))\"" }
-            let arrayLiteral = "[" + jsonKeys.joined(separator: ",") + "]"
-            return ctx.evaluateScript(arrayLiteral) ?? JSValue(undefinedIn: ctx)
-        }
-        miniapp.setObject(getStorageKeysFn, forKeyedSubscript: "getStorageKeys")
-
-        // miniapp.clearStorage() - remove all stored data
-        let clearStorageFn = JSValue(newFunctionIn: context) { ctx, obj, args in
-            runtime.storage.clear()
-            return JSValue(undefinedIn: ctx)
-        }
-        miniapp.setObject(clearStorageFn, forKeyedSubscript: "clearStorage")
-
-        // miniapp.navigateTo({url, query})
+        // --- Core: navigateTo / navigateBack ---
         let navigateToFn = JSValue(newFunctionIn: context) { ctx, obj, args in
             if let options = args.first, options.isObject {
                 let urlVal = options.objectForKeyedSubscript("url")
                 let queryVal = options.objectForKeyedSubscript("query")
                 let url = urlVal.isUndefined ? "" : (urlVal.toString() ?? "")
                 let query = queryVal.isUndefined ? "" : (queryVal.toString() ?? "")
-                runtime.pendingNavigation = MiniAppNavigationCommand(
-                    action: .push,
-                    pagePath: url,
-                    query: query
-                )
+                runtime.pendingNavigation = MiniAppNavigationCommand(action: .push, pagePath: url, query: query)
             }
             return JSValue(undefinedIn: ctx)
         }
         miniapp.setObject(navigateToFn, forKeyedSubscript: "navigateTo")
 
-        // miniapp.navigateBack()
         let navigateBackFn = JSValue(newFunctionIn: context) { ctx, obj, args in
             if runtime.pageStack.count > 1 {
                 runtime.pendingNavigation = MiniAppNavigationCommand(action: .pop)
@@ -372,88 +368,16 @@ public enum MiniAppNavigationAction: String, Equatable {
         }
         miniapp.setObject(navigateBackFn, forKeyedSubscript: "navigateBack")
 
-        // miniapp.request({url, method, header, success, fail, complete})
-        let requestFn = JSValue(newFunctionIn: context) { ctx, obj, args in
-            guard let options = args.first, options.isObject else {
-                return JSValue(undefinedIn: ctx)
-            }
-            let urlVal = options.objectForKeyedSubscript("url")
-            let methodVal = options.objectForKeyedSubscript("method")
-            let urlString = urlVal.isUndefined ? "" : (urlVal.toString() ?? "")
-            let method = methodVal.isUndefined ? "GET" : (methodVal.toString() ?? "GET")
-
-            let successCb = options.objectForKeyedSubscript("success")
-            let failCb = options.objectForKeyedSubscript("fail")
-            let completeCb = options.objectForKeyedSubscript("complete")
-
-            guard let url = URL(string: urlString) else {
-                if failCb.isFunction {
-                    let errObj = JSValue(newObjectIn: ctx)
-                    errObj.setObject(JSValue(string: "invalid url", in: ctx), forKeyedSubscript: "errMsg")
-                    let _ = try? failCb.call(withArguments: [errObj])
-                }
-                if completeCb.isFunction {
-                    let _ = try? completeCb.call(withArguments: [])
-                }
-                return JSValue(undefinedIn: ctx)
-            }
-
-            var request = URLRequest(url: url)
-            request.httpMethod = method
-
-            // Parse headers if provided
-            let headerObj = options.objectForKeyedSubscript("header")
-            if headerObj.isObject {
-                if let headerDict = headerObj.toObject() as? [String: Any] {
-                    for (key, value) in headerDict {
-                        request.setValue(String(describing: value), forHTTPHeaderField: key)
-                    }
-                }
-            }
-
-            // Parse body if provided
-            let bodyVal = options.objectForKeyedSubscript("data")
-            if bodyVal.isString {
-                request.httpBody = (bodyVal.toString() ?? "").data(using: .utf8)
-            }
-
-            // Fire async HTTP request
-            nonisolated(unsafe) let reqSuccessCb = successCb
-            nonisolated(unsafe) let reqFailCb = failCb
-            nonisolated(unsafe) let reqCompleteCb = completeCb
-            nonisolated(unsafe) let reqCtx = ctx
-            URLSession.shared.dataTask(with: request) { data, response, error in
-                DispatchQueue.main.async {
-                    if let error = error {
-                        if reqFailCb.isFunction {
-                            let errObj = JSValue(newObjectIn: reqCtx)
-                            errObj.setObject(JSValue(string: error.localizedDescription, in: reqCtx), forKeyedSubscript: "errMsg")
-                            let _ = try? reqFailCb.call(withArguments: [errObj])
-                        }
-                    } else {
-                        if reqSuccessCb.isFunction {
-                            let resultObj = JSValue(newObjectIn: reqCtx)
-                            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 200
-                            resultObj.setObject(JSValue(double: Double(statusCode), in: reqCtx), forKeyedSubscript: "statusCode")
-                            if let data = data, let bodyString = String(data: data, encoding: .utf8) {
-                                resultObj.setObject(JSValue(string: bodyString, in: reqCtx), forKeyedSubscript: "data")
-                            } else {
-                                resultObj.setObject(JSValue(string: "", in: reqCtx), forKeyedSubscript: "data")
-                            }
-                            let _ = try? reqSuccessCb.call(withArguments: [resultObj])
-                        }
-                    }
-                    if reqCompleteCb.isFunction {
-                        let _ = try? reqCompleteCb.call(withArguments: [])
-                    }
-                }
-            }.resume()
-
-            return JSValue(undefinedIn: ctx)
+        // --- Register module APIs ---
+        self.namespaceObject = miniapp
+        for moduleType in modules {
+            moduleType.module.registerInRuntime(self)
         }
-        miniapp.setObject(requestFn, forKeyedSubscript: "request")
 
-        context.setObject(miniapp, forKeyedSubscript: "miniapp")
+        context.setObject(miniapp, forKeyedSubscript: namespace)
+        if namespace != "miniapp" {
+            context.setObject(miniapp, forKeyedSubscript: "miniapp")
+        }
     }
 
     // MARK: - Public API

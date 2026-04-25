@@ -8,15 +8,16 @@ import SkipMiniAppModel
 #if os(iOS) || SKIP
 import SkipWeb
 
-/// A SwiftUI view that loads and displays a MiniApp from a package file.
+/// A SwiftUI view that hosts and displays a MiniApp from a package file or expanded directory.
 ///
 /// Extracts the package contents to a temporary directory, parses the manifest,
 /// displays the start page in a WebView, and integrates MiniAppRuntime to manage
 /// JavaScript execution, lifecycle events, and page-to-runtime bridging.
-public struct MiniAppView: View {
+public struct MiniAppHostView: View {
     private let packagePath: String?
     private let directoryURL: URL?
-    private let storageMode: MiniAppStorageMode
+    private let namespace: String
+    private let modules: [MiniAppModuleType]
     @State private var manifest: MiniAppManifest?
     @State private var runtime: MiniAppRuntime?
     @State private var startPageURL: URL?
@@ -26,26 +27,29 @@ public struct MiniAppView: View {
     @State private var extractDir: URL?
 
     /// Load a MiniApp from a `.ma` ZIP package file.
-    public init(packagePath: String, storageMode: MiniAppStorageMode = .inMemory) {
+    ///
+    /// - Parameters:
+    ///   - packagePath: Path to the `.ma` ZIP file.
+    ///   - namespace: The JavaScript global name for the bridge API. Defaults to `""miniapp""`.
+    ///   - modules: API modules to enable.
+    public init(packagePath: String, namespace: String = "miniapp", modules: [MiniAppModuleType]) {
         self.packagePath = packagePath
         self.directoryURL = nil
-        self.storageMode = storageMode
+        self.namespace = namespace
+        self.modules = modules
     }
 
     /// Load a MiniApp from an expanded directory (local file URL or bundle asset URL).
     ///
-    /// The directory must contain a `manifest.json` and the files referenced by it.
-    /// On Android, files are copied from the bundle to a temp directory so that the
-    /// WebView can load them via file:// URLs.
-    ///
     /// - Parameters:
     ///   - directoryURL: URL to the expanded MiniApp directory.
-    ///   - storageMode: How storage is persisted. Use `.persistent(baseDirectory:)` to
-    ///     retain data across launches. Defaults to `.inMemory`.
-    public init(directoryURL: URL, storageMode: MiniAppStorageMode = .inMemory) {
+    ///   - namespace: The JavaScript global name for the bridge API. Defaults to `"miniapp"`.
+    ///   - modules: API modules to enable. Defaults to all built-in modules.
+    public init(directoryURL: URL, namespace: String = "miniapp", modules: [MiniAppModuleType]? = nil) {
         self.packagePath = nil
         self.directoryURL = directoryURL
-        self.storageMode = storageMode
+        self.namespace = namespace
+        self.modules = modules ?? [MiniAppModuleType(MiniAppFileSystemModule()), MiniAppModuleType(MiniAppNetworkModule()), MiniAppModuleType(MiniAppLoggingModule())]
     }
 
     public var body: some View {
@@ -124,42 +128,33 @@ public struct MiniAppView: View {
         return config
     }
 
-    /// JavaScript injected into each WebView page to provide the miniapp.* bridge API.
+    /// JavaScript injected into each WebView page.
     ///
-    /// Storage is pre-populated from the runtime's MiniAppStorage so that reads are
-    /// synchronous. Writes update the local copy and post to the native bridge for
-    /// persistence. `window.localStorage` is blocked to prevent unsandboxed access.
+    /// Assembles the core bridge infrastructure plus each module's bridge script.
     private var bridgeUserScript: WebViewUserScript {
-        // Serialize current storage state as JSON for injection
+        // Pre-populate the storage state for the FileSystemModule if present
         var storageJSON = "{}"
-        if let rt = runtime {
-            var dict: [String: String] = [:]
-            for key in rt.storage.keys() {
-                if let value = rt.storage.get(key) {
-                    dict[key] = value
-                }
-            }
-            if let data = try? JSONSerialization.data(withJSONObject: dict),
-               let json = String(data: data, encoding: .utf8) {
-                storageJSON = json
+        if let rt = runtime, let fsModule = modules.first(where: { $0.module is MiniAppFileSystemModule })?.module as? MiniAppFileSystemModule {
+            storageJSON = fsModule.storageJSON(for: rt)
+        }
+
+        // Collect module bridge scripts
+        var moduleScripts = ""
+        for moduleType in modules {
+            let script = moduleType.module.bridgeScript()
+            if !script.isEmpty {
+                moduleScripts += "\n" + script
             }
         }
 
+        let ns = namespace
         let script = """
         (function() {
-            // --- Block localStorage to prevent unsandboxed access ---
-            var _blockedStorageError = 'localStorage is not available in MiniApps. Use miniapp.getStorageSync() / miniapp.setStorageSync() instead.';
-            try {
-                Object.defineProperty(window, 'localStorage', {
-                    get: function() {
-                        throw new Error(_blockedStorageError);
-                    },
-                    configurable: false
-                });
-            } catch(e) { /* may fail in some environments */ }
+            var _ns = '\(ns)';
 
             // --- MiniApp bridge setup ---
-            if (!window.miniapp) window.miniapp = {};
+            if (!window[_ns]) window[_ns] = {};
+            var _api = window[_ns];
             var _callId = 0;
             var _callbacks = {};
 
@@ -167,12 +162,10 @@ public struct MiniAppView: View {
                 var id = ++_callId;
                 if (callback) { _callbacks[id] = callback; }
                 try {
-                    // Pass a JS object (not a JSON string) to postMessage so that
-                    // SkipWeb's Android polyfill only JSON-encodes it once.
                     webkit.messageHandlers.miniappBridge.postMessage(
                         { callId: id, action: action, data: data }
                     );
-                } catch(e) { /* bridge not available */ }
+                } catch(e) {}
             }
 
             window._miniappBridgeResponse = function(callId, success, data) {
@@ -183,52 +176,24 @@ public struct MiniAppView: View {
                 }
             };
 
-            // --- Synchronous storage backed by a local JS object ---
-            // Pre-populated from the native MiniAppStorage state at page load.
-            // Writes are synchronous locally and async-persisted via the bridge.
+            // Pre-populated storage state for FileSystemModule
             var _store = \(storageJSON);
 
-            miniapp.getStorageSync = function(key) {
-                return _store.hasOwnProperty(key) ? _store[key] : undefined;
-            };
-            miniapp.setStorageSync = function(key, value) {
-                var v = String(value);
-                _store[key] = v;
-                sendMessage('setStorageSync', { key: key, value: v });
-            };
-            miniapp.removeStorageSync = function(key) {
-                delete _store[key];
-                sendMessage('removeStorageSync', { key: key });
-            };
-            miniapp.getStorageKeys = function() {
-                return Object.keys(_store);
-            };
-            miniapp.clearStorage = function() {
-                _store = {};
-                sendMessage('clearStorage', {});
-            };
-
-            // --- Navigation ---
-            miniapp.navigateTo = function(options) {
+            // --- Core: Navigation ---
+            _api.navigateTo = function(options) {
                 sendMessage('navigateTo', { url: options.url || '', query: options.query || '' });
             };
-            miniapp.navigateBack = function() {
+            _api.navigateBack = function() {
                 sendMessage('navigateBack', {});
             };
 
-            // --- HTTP requests ---
-            miniapp.request = function(options) {
-                sendMessage('request', {
-                    url: options.url || '',
-                    method: options.method || 'GET',
-                    header: options.header || {},
-                    data: options.data || ''
-                }, function(success, data) {
-                    if (success && options.success) { options.success(data); }
-                    if (!success && options.fail) { options.fail(data); }
-                    if (options.complete) { options.complete(); }
-                });
-            };
+            // --- Module bridge scripts ---
+            \(moduleScripts)
+
+            // Also expose under the standard "miniapp" name for W3C compatibility
+            if (_ns !== 'miniapp') {
+                window.miniapp = _api;
+            }
         })();
         """
         return WebViewUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true)
@@ -304,8 +269,7 @@ public struct MiniAppView: View {
         self.manifest = manifest
         self.extractDir = servingDir
 
-        let storage = MiniAppStorage(appId: manifest.appId, mode: storageMode)
-        let rt = MiniAppRuntime(package: package, manifest: manifest, storage: storage)
+        let rt = MiniAppRuntime(package: package, manifest: manifest, namespace: namespace, modules: modules)
         rt.start()
         rt.fireAppShow()
 
@@ -338,51 +302,67 @@ public struct MiniAppView: View {
 
         // On iOS, WKWebView auto-converts JS objects to NSDictionary.
         // On Android, SkipWeb's router parses the JSON into a dictionary.
-        // Support both: try as dictionary first, fall back to string parsing.
         let json: [String: Any]
+        // SKIP NOWARN
         if let dict = message.body as? [String: Any] {
             json = dict
         } else if let bodyString = message.body as? String,
                   let bodyData = bodyString.data(using: .utf8),
+                  // SKIP NOWARN
                   let parsed = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] {
             json = parsed
         } else {
             return
         }
 
+        // SKIP NOWARN
         guard let action = json["action"] as? String,
+              // SKIP NOWARN
               let data = json["data"] as? [String: Any] else {
             return
         }
         let callId = json["callId"] as? Int ?? 0
 
+        // Core actions: navigation
         switch action {
-        case "setStorageSync":
-            if let key = data["key"] as? String, let value = data["value"] as? String {
-                // Persist the write from the WebView's local JS store to MiniAppStorage
-                runtime.storage.set(key, value: value)
-            }
-        case "removeStorageSync":
-            if let key = data["key"] as? String {
-                runtime.storage.remove(key)
-            }
-        case "clearStorage":
-            runtime.storage.clear()
         case "navigateTo":
             if let url = data["url"] as? String {
                 let query = data["query"] as? String ?? ""
                 runtime.pendingNavigation = MiniAppNavigationCommand(action: .push, pagePath: url, query: query)
             }
+            return
         case "navigateBack":
             runtime.pendingNavigation = MiniAppNavigationCommand(action: .pop)
+            return
         default:
             break
         }
+
+        // Delegate to modules
+        let respond: (Int, Bool, [String: Any]) -> Void = { callId, success, responseJSON in
+            self.sendBridgeResponseJSON(callId: callId, success: success, json: responseJSON)
+        }
+        for moduleType in modules {
+            if moduleType.module.handleBridgeMessage(action: action, data: data, callId: callId, runtime: runtime, respond: respond) {
+                return
+            }
+        }
     }
 
-    /// Send a response back to the WebView JavaScript bridge.
+    /// Send a string response back to the WebView JavaScript bridge.
     private func sendBridgeResponse(callId: Int, success: Bool, data: String) {
         let js = "window._miniappBridgeResponse(\(callId), \(success), '\(data.replacingOccurrences(of: "'", with: "\\'"))')"
+        Task { @MainActor in
+            let _ = try? await navigator.evaluateJavaScript(js)
+        }
+    }
+
+    /// Send a JSON object response back to the WebView JavaScript bridge.
+    private func sendBridgeResponseJSON(callId: Int, success: Bool, json: [String: Any]) {
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: json),
+              let jsonString = String(data: jsonData, encoding: .utf8) else { return }
+        // Pass as a parsed object, not a string literal
+        let js = "window._miniappBridgeResponse(\(callId), \(success), \(jsonString))"
         Task { @MainActor in
             let _ = try? await navigator.evaluateJavaScript(js)
         }
