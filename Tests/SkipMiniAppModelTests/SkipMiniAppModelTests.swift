@@ -963,6 +963,227 @@ final class SkipMiniAppModelTests: XCTestCase {
         XCTAssertTrue(runtime.evaluateScriptIsUndefined("miniapp.getStorageSync('nonexistent')"))
     }
 
+    // MARK: - MiniAppStorage Tests
+
+    func testStorageInMemoryBasicOperations() throws {
+        let storage = MiniAppStorage(appId: "com.example.test", mode: .inMemory)
+
+        XCTAssertNil(storage.get("key1"))
+
+        storage.set("key1", value: "value1")
+        XCTAssertEqual(storage.get("key1"), "value1")
+
+        storage.set("key1", value: "updated")
+        XCTAssertEqual(storage.get("key1"), "updated")
+
+        storage.remove("key1")
+        XCTAssertNil(storage.get("key1"))
+    }
+
+    func testStorageKeys() throws {
+        let storage = MiniAppStorage(appId: "com.example.test", mode: .inMemory)
+
+        XCTAssertEqual(storage.keys().count, 0)
+
+        storage.set("a", value: "1")
+        storage.set("b", value: "2")
+        storage.set("c", value: "3")
+
+        let keys = storage.keys().sorted()
+        XCTAssertEqual(keys, ["a", "b", "c"])
+    }
+
+    func testStorageClear() throws {
+        let storage = MiniAppStorage(appId: "com.example.test", mode: .inMemory)
+        storage.set("a", value: "1")
+        storage.set("b", value: "2")
+
+        storage.clear()
+        XCTAssertEqual(storage.keys().count, 0)
+        XCTAssertNil(storage.get("a"))
+    }
+
+    func testStoragePersistentWriteAndRead() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let appId = "com.example.persistent"
+
+        // Write data
+        let storage1 = MiniAppStorage(appId: appId, mode: .persistent(baseDirectory: tempDir))
+        storage1.set("name", value: "MiniApp")
+        storage1.set("count", value: "42")
+
+        // Read with a new instance — should find persisted data
+        let storage2 = MiniAppStorage(appId: appId, mode: .persistent(baseDirectory: tempDir))
+        XCTAssertEqual(storage2.get("name"), "MiniApp")
+        XCTAssertEqual(storage2.get("count"), "42")
+    }
+
+    func testStoragePersistentRemoveAndClear() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let appId = "com.example.cleartest"
+        let storage = MiniAppStorage(appId: appId, mode: .persistent(baseDirectory: tempDir))
+        storage.set("a", value: "1")
+        storage.set("b", value: "2")
+        storage.remove("a")
+
+        // Reload
+        let storage2 = MiniAppStorage(appId: appId, mode: .persistent(baseDirectory: tempDir))
+        XCTAssertNil(storage2.get("a"))
+        XCTAssertEqual(storage2.get("b"), "2")
+
+        storage2.clear()
+        let storage3 = MiniAppStorage(appId: appId, mode: .persistent(baseDirectory: tempDir))
+        XCTAssertEqual(storage3.keys().count, 0)
+    }
+
+    func testStorageCrossAppIsolation() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let storageA = MiniAppStorage(appId: "com.example.appA", mode: .persistent(baseDirectory: tempDir))
+        let storageB = MiniAppStorage(appId: "com.example.appB", mode: .persistent(baseDirectory: tempDir))
+
+        storageA.set("secret", value: "alpha")
+        storageB.set("secret", value: "beta")
+
+        // Each app sees only its own data
+        XCTAssertEqual(storageA.get("secret"), "alpha")
+        XCTAssertEqual(storageB.get("secret"), "beta")
+
+        // Reload and verify isolation persists
+        let reloadA = MiniAppStorage(appId: "com.example.appA", mode: .persistent(baseDirectory: tempDir))
+        let reloadB = MiniAppStorage(appId: "com.example.appB", mode: .persistent(baseDirectory: tempDir))
+        XCTAssertEqual(reloadA.get("secret"), "alpha")
+        XCTAssertEqual(reloadB.get("secret"), "beta")
+    }
+
+    func testStorageDirectoryURL() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let storage = MiniAppStorage(appId: "com.example.dir", mode: .persistent(baseDirectory: tempDir))
+        let dirURL = storage.storageDirectoryURL
+        XCTAssertNotNil(dirURL)
+        XCTAssertTrue(dirURL?.path.contains("com.example.dir") == true)
+
+        // In-memory mode has no directory
+        let memStorage = MiniAppStorage(appId: "com.example.mem", mode: .inMemory)
+        XCTAssertNil(memStorage.storageDirectoryURL)
+    }
+
+    func testStorageDirectoryURLForAppId() throws {
+        let baseDir = URL(fileURLWithPath: "/tmp/miniapp-storage")
+        let url = MiniAppStorage.storageDirectoryURL(forAppId: "com.example.lookup", baseDirectory: baseDir)
+        XCTAssertTrue(url.path.contains("com.example.lookup"))
+    }
+
+    func testStorageKeyValidation() throws {
+        // Invalid keys should throw
+        do { try MiniAppStorage.validateKey(""); XCTFail("Expected error for empty key") } catch { }
+        do { try MiniAppStorage.validateKey("path/traversal"); XCTFail("Expected error for / in key") } catch { }
+        do { try MiniAppStorage.validateKey(".."); XCTFail("Expected error for .. key") } catch { }
+        do { try MiniAppStorage.validateKey("bad\\key"); XCTFail("Expected error for \\ in key") } catch { }
+        // Valid keys should not throw
+        try MiniAppStorage.validateKey("valid_key")
+        try MiniAppStorage.validateKey("simple")
+    }
+
+    func testStorageAppIdValidation() throws {
+        do { try MiniAppStorage.validateAppId(""); XCTFail("Expected error for empty app ID") } catch { }
+        do { try MiniAppStorage.validateAppId("../../etc"); XCTFail("Expected error for traversal") } catch { }
+        do { try MiniAppStorage.validateAppId("bad/id"); XCTFail("Expected error for / in app ID") } catch { }
+        try MiniAppStorage.validateAppId("com.example.valid")
+    }
+
+    func testStorageAppIdSanitization() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        // App IDs with special characters get sanitized
+        let storage = MiniAppStorage(appId: "com.example/../../attack", mode: .persistent(baseDirectory: tempDir))
+        let dirURL = storage.storageDirectoryURL
+        // The path should NOT contain traversal sequences
+        XCTAssertNotNil(dirURL)
+        XCTAssertFalse(dirURL?.path.contains("..") == true)
+    }
+
+    func testRuntimeStorageWithMiniAppStorage() throws {
+        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
+        let storage = MiniAppStorage(appId: manifest.appId, mode: .inMemory)
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest, storage: storage)
+        runtime.start()
+
+        // JS writes go through MiniAppStorage
+        runtime.evaluateScript("miniapp.setStorageSync('jsKey', 'jsValue')")
+        XCTAssertEqual(storage.get("jsKey"), "jsValue")
+
+        // MiniAppStorage writes are visible from JS
+        storage.set("nativeKey", value: "nativeValue")
+        let result = runtime.evaluateScript("miniapp.getStorageSync('nativeKey')")
+        XCTAssertEqual(result, "nativeValue")
+    }
+
+    func testRuntimeStorageGetKeys() throws {
+        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest)
+        runtime.start()
+
+        runtime.evaluateScript("miniapp.setStorageSync('a', '1')")
+        runtime.evaluateScript("miniapp.setStorageSync('b', '2')")
+
+        let keysJSON = runtime.evaluateScript("JSON.stringify(miniapp.getStorageKeys())")
+        XCTAssertNotNil(keysJSON)
+        // Parse the JSON array and check it contains both keys
+        if let data = keysJSON?.data(using: .utf8),
+           let arr = try? JSONSerialization.jsonObject(with: data) as? [String] {
+            XCTAssertTrue(arr.contains("a"))
+            XCTAssertTrue(arr.contains("b"))
+        } else {
+            XCTFail("Failed to parse storage keys JSON: \(keysJSON ?? "nil")")
+        }
+    }
+
+    func testRuntimeStorageClear() throws {
+        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest)
+        runtime.start()
+
+        runtime.evaluateScript("miniapp.setStorageSync('x', '1')")
+        runtime.evaluateScript("miniapp.clearStorage()")
+
+        XCTAssertTrue(runtime.evaluateScriptIsUndefined("miniapp.getStorageSync('x')"))
+        let keysJSON = runtime.evaluateScript("JSON.stringify(miniapp.getStorageKeys())")
+        XCTAssertEqual(keysJSON, "[]")
+    }
+
+    func testRuntimePersistentStorageAcrossInstances() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let appJS = "App({})"
+        let (pkg1, manifest1) = try createRuntimePackage(appJS: appJS)
+        let storage1 = MiniAppStorage(appId: manifest1.appId, mode: .persistent(baseDirectory: tempDir))
+        let runtime1 = MiniAppRuntime(package: pkg1, manifest: manifest1, storage: storage1)
+        runtime1.start()
+
+        // Write data in the first runtime instance
+        runtime1.evaluateScript("miniapp.setStorageSync('persistent', 'data')")
+
+        // Create a new runtime with the same persistent storage
+        let (pkg2, manifest2) = try createRuntimePackage(appJS: appJS)
+        let storage2 = MiniAppStorage(appId: manifest2.appId, mode: .persistent(baseDirectory: tempDir))
+        let runtime2 = MiniAppRuntime(package: pkg2, manifest: manifest2, storage: storage2)
+        runtime2.start()
+
+        // The data should persist
+        let result = runtime2.evaluateScript("miniapp.getStorageSync('persistent')")
+        XCTAssertEqual(result, "data")
+    }
+
     func testRuntimeNavigationCommand() throws {
         let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
         let runtime = MiniAppRuntime(package: pkg, manifest: manifest)

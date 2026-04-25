@@ -14,7 +14,9 @@ import SkipWeb
 /// displays the start page in a WebView, and integrates MiniAppRuntime to manage
 /// JavaScript execution, lifecycle events, and page-to-runtime bridging.
 public struct MiniAppView: View {
-    private let packagePath: String
+    private let packagePath: String?
+    private let directoryURL: URL?
+    private let storageMode: MiniAppStorageMode
     @State private var manifest: MiniAppManifest?
     @State private var runtime: MiniAppRuntime?
     @State private var startPageURL: URL?
@@ -23,8 +25,27 @@ public struct MiniAppView: View {
     @State private var navigator: WebViewNavigator = WebViewNavigator()
     @State private var extractDir: URL?
 
-    public init(packagePath: String) {
+    /// Load a MiniApp from a `.ma` ZIP package file.
+    public init(packagePath: String, storageMode: MiniAppStorageMode = .inMemory) {
         self.packagePath = packagePath
+        self.directoryURL = nil
+        self.storageMode = storageMode
+    }
+
+    /// Load a MiniApp from an expanded directory (local file URL or bundle asset URL).
+    ///
+    /// The directory must contain a `manifest.json` and the files referenced by it.
+    /// On Android, files are copied from the bundle to a temp directory so that the
+    /// WebView can load them via file:// URLs.
+    ///
+    /// - Parameters:
+    ///   - directoryURL: URL to the expanded MiniApp directory.
+    ///   - storageMode: How storage is persisted. Use `.persistent(baseDirectory:)` to
+    ///     retain data across launches. Defaults to `.inMemory`.
+    public init(directoryURL: URL, storageMode: MiniAppStorageMode = .inMemory) {
+        self.packagePath = nil
+        self.directoryURL = directoryURL
+        self.storageMode = storageMode
     }
 
     public var body: some View {
@@ -104,9 +125,40 @@ public struct MiniAppView: View {
     }
 
     /// JavaScript injected into each WebView page to provide the miniapp.* bridge API.
+    ///
+    /// Storage is pre-populated from the runtime's MiniAppStorage so that reads are
+    /// synchronous. Writes update the local copy and post to the native bridge for
+    /// persistence. `window.localStorage` is blocked to prevent unsandboxed access.
     private var bridgeUserScript: WebViewUserScript {
+        // Serialize current storage state as JSON for injection
+        var storageJSON = "{}"
+        if let rt = runtime {
+            var dict: [String: String] = [:]
+            for key in rt.storage.keys() {
+                if let value = rt.storage.get(key) {
+                    dict[key] = value
+                }
+            }
+            if let data = try? JSONSerialization.data(withJSONObject: dict),
+               let json = String(data: data, encoding: .utf8) {
+                storageJSON = json
+            }
+        }
+
         let script = """
         (function() {
+            // --- Block localStorage to prevent unsandboxed access ---
+            var _blockedStorageError = 'localStorage is not available in MiniApps. Use miniapp.getStorageSync() / miniapp.setStorageSync() instead.';
+            try {
+                Object.defineProperty(window, 'localStorage', {
+                    get: function() {
+                        throw new Error(_blockedStorageError);
+                    },
+                    configurable: false
+                });
+            } catch(e) { /* may fail in some environments */ }
+
+            // --- MiniApp bridge setup ---
             if (!window.miniapp) window.miniapp = {};
             var _callId = 0;
             var _callbacks = {};
@@ -114,9 +166,13 @@ public struct MiniAppView: View {
             function sendMessage(action, data, callback) {
                 var id = ++_callId;
                 if (callback) { _callbacks[id] = callback; }
-                webkit.messageHandlers.miniappBridge.postMessage(
-                    JSON.stringify({ callId: id, action: action, data: data })
-                );
+                try {
+                    // Pass a JS object (not a JSON string) to postMessage so that
+                    // SkipWeb's Android polyfill only JSON-encodes it once.
+                    webkit.messageHandlers.miniappBridge.postMessage(
+                        { callId: id, action: action, data: data }
+                    );
+                } catch(e) { /* bridge not available */ }
             }
 
             window._miniappBridgeResponse = function(callId, success, data) {
@@ -127,21 +183,40 @@ public struct MiniAppView: View {
                 }
             };
 
+            // --- Synchronous storage backed by a local JS object ---
+            // Pre-populated from the native MiniAppStorage state at page load.
+            // Writes are synchronous locally and async-persisted via the bridge.
+            var _store = \(storageJSON);
+
             miniapp.getStorageSync = function(key) {
-                sendMessage('getStorageSync', { key: key });
+                return _store.hasOwnProperty(key) ? _store[key] : undefined;
             };
             miniapp.setStorageSync = function(key, value) {
-                sendMessage('setStorageSync', { key: key, value: value });
+                var v = String(value);
+                _store[key] = v;
+                sendMessage('setStorageSync', { key: key, value: v });
             };
             miniapp.removeStorageSync = function(key) {
+                delete _store[key];
                 sendMessage('removeStorageSync', { key: key });
             };
+            miniapp.getStorageKeys = function() {
+                return Object.keys(_store);
+            };
+            miniapp.clearStorage = function() {
+                _store = {};
+                sendMessage('clearStorage', {});
+            };
+
+            // --- Navigation ---
             miniapp.navigateTo = function(options) {
                 sendMessage('navigateTo', { url: options.url || '', query: options.query || '' });
             };
             miniapp.navigateBack = function() {
                 sendMessage('navigateBack', {});
             };
+
+            // --- HTTP requests ---
             miniapp.request = function(options) {
                 sendMessage('request', {
                     url: options.url || '',
@@ -156,41 +231,90 @@ public struct MiniAppView: View {
             };
         })();
         """
-        return WebViewUserScript(source: script, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+        return WebViewUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true)
     }
 
     private func loadMiniApp() {
         do {
-            let package = MiniAppPackage(path: packagePath)
-            let m = try package.readManifest()
-
-            let dir = FileManager.default.temporaryDirectory
-                .appendingPathComponent("miniapp")
-                .appendingPathComponent(m.appId)
-
-            // Clean and recreate extraction directory
-            try? FileManager.default.removeItem(at: dir)
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            try package.extractToDirectory(at: dir.path)
-
-            self.manifest = m
-            self.extractDir = dir
-
-            // Create and start runtime
-            let rt = MiniAppRuntime(package: package, manifest: m)
-            rt.start()
-            rt.fireAppShow()
-
-            // Load the first page
-            if let firstPage = m.pages.first {
-                rt.loadPage(pagePath: firstPage)
-                self.startPageURL = dir.appendingPathComponent(firstPage + ".html")
+            if let directoryURL = directoryURL {
+                try loadFromDirectory(directoryURL)
+            } else if let packagePath = packagePath {
+                try loadFromPackage(packagePath)
             }
-
-            self.runtime = rt
         } catch {
             self.errorMessage = String(describing: error)
         }
+    }
+
+    private func loadFromPackage(_ path: String) throws {
+        let package = MiniAppPackage(path: path)
+        let m = try package.readManifest()
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("miniapp")
+            .appendingPathComponent(m.appId)
+
+        // Clean and recreate extraction directory
+        try? FileManager.default.removeItem(at: dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try package.extractToDirectory(at: dir.path)
+
+        startRuntime(package: package, manifest: m, servingDir: dir)
+    }
+
+    private func loadFromDirectory(_ sourceURL: URL) throws {
+        let dirPackage = MiniAppDirectoryPackage(rootURL: sourceURL)
+        let m = try dirPackage.readManifest()
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("miniapp")
+            .appendingPathComponent(m.appId)
+
+        // Clean and recreate serving directory
+        try? FileManager.default.removeItem(at: dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        // Copy known files from the source directory to the temp serving directory.
+        // Uses Data(contentsOf:) which works for both iOS file URLs and Android APK asset URLs.
+        let filesToCopy = buildFileList(manifest: m)
+        for relativePath in filesToCopy {
+            let srcURL = sourceURL.appendingPathComponent(relativePath)
+            guard let data = try? Data(contentsOf: srcURL), !data.isEmpty else { continue }
+            let destURL = dir.appendingPathComponent(relativePath)
+            let destDir = destURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
+            FileManager.default.createFile(atPath: destURL.path, contents: data, attributes: nil)
+        }
+
+        startRuntime(package: dirPackage, manifest: m, servingDir: dir)
+    }
+
+    /// Build the list of files to copy from the source directory based on the manifest.
+    private func buildFileList(manifest: MiniAppManifest) -> [String] {
+        var files = ["manifest.json", "app.js", "app.css"]
+        for pagePath in manifest.pages {
+            files.append(pagePath + ".html")
+            files.append(pagePath + ".js")
+            files.append(pagePath + ".css")
+        }
+        return files
+    }
+
+    private func startRuntime(package: MiniAppPackageReader, manifest: MiniAppManifest, servingDir: URL) {
+        self.manifest = manifest
+        self.extractDir = servingDir
+
+        let storage = MiniAppStorage(appId: manifest.appId, mode: storageMode)
+        let rt = MiniAppRuntime(package: package, manifest: manifest, storage: storage)
+        rt.start()
+        rt.fireAppShow()
+
+        if let firstPage = manifest.pages.first {
+            rt.loadPage(pagePath: firstPage)
+            self.startPageURL = servingDir.appendingPathComponent(firstPage + ".html")
+        }
+
+        self.runtime = rt
     }
 
     /// Handle a navigation command from the JS runtime.
@@ -211,42 +335,46 @@ public struct MiniAppView: View {
     @MainActor
     private func handleBridgeMessage(_ message: WebViewMessage) {
         guard let runtime = runtime else { return }
-        guard let bodyString = message.body as? String,
-              let bodyData = bodyString.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any],
-              let action = json["action"] as? String,
+
+        // On iOS, WKWebView auto-converts JS objects to NSDictionary.
+        // On Android, SkipWeb's router parses the JSON into a dictionary.
+        // Support both: try as dictionary first, fall back to string parsing.
+        let json: [String: Any]
+        if let dict = message.body as? [String: Any] {
+            json = dict
+        } else if let bodyString = message.body as? String,
+                  let bodyData = bodyString.data(using: .utf8),
+                  let parsed = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] {
+            json = parsed
+        } else {
+            return
+        }
+
+        guard let action = json["action"] as? String,
               let data = json["data"] as? [String: Any] else {
             return
         }
         let callId = json["callId"] as? Int ?? 0
 
         switch action {
-        case "getStorageSync":
-            if let key = data["key"] as? String {
-                let result = runtime.evaluateScript("miniapp.getStorageSync('\(key.replacingOccurrences(of: "'", with: "\\'"))')")
-                let value = result ?? ""
-                sendBridgeResponse(callId: callId, success: true, data: value)
-            }
         case "setStorageSync":
             if let key = data["key"] as? String, let value = data["value"] as? String {
-                let safeKey = key.replacingOccurrences(of: "'", with: "\\'")
-                let safeVal = value.replacingOccurrences(of: "'", with: "\\'")
-                runtime.evaluateScript("miniapp.setStorageSync('\(safeKey)', '\(safeVal)')")
+                // Persist the write from the WebView's local JS store to MiniAppStorage
+                runtime.storage.set(key, value: value)
             }
         case "removeStorageSync":
             if let key = data["key"] as? String {
-                let safeKey = key.replacingOccurrences(of: "'", with: "\\'")
-                runtime.evaluateScript("miniapp.removeStorageSync('\(safeKey)')")
+                runtime.storage.remove(key)
             }
+        case "clearStorage":
+            runtime.storage.clear()
         case "navigateTo":
             if let url = data["url"] as? String {
                 let query = data["query"] as? String ?? ""
-                let safeUrl = url.replacingOccurrences(of: "'", with: "\\'")
-                let safeQuery = query.replacingOccurrences(of: "'", with: "\\'")
-                runtime.evaluateScript("miniapp.navigateTo({url: '\(safeUrl)', query: '\(safeQuery)'})")
+                runtime.pendingNavigation = MiniAppNavigationCommand(action: .push, pagePath: url, query: query)
             }
         case "navigateBack":
-            runtime.evaluateScript("miniapp.navigateBack()")
+            runtime.pendingNavigation = MiniAppNavigationCommand(action: .pop)
         default:
             break
         }

@@ -14,8 +14,62 @@ public enum MiniAppError: Error {
     case resourceNotFound
 }
 
+/// Base class for reading MiniApp resources from various sources (ZIP archive or expanded directory).
+///
+/// Subclasses implement reading manifest, app-level, and page-level resources.
+/// Uses a class hierarchy rather than a protocol for Skip Lite transpilation compatibility.
+open class MiniAppPackageReader {
+    /// Read and parse the manifest.
+    open func readManifest() throws -> MiniAppManifest {
+        throw MiniAppError.missingManifest
+    }
+
+    /// Read the global app.js content.
+    open func readAppJS() throws -> Data? {
+        return nil
+    }
+
+    /// Read the JS for a page route.
+    open func readPageJS(pagePath: String) throws -> Data? {
+        return nil
+    }
+}
+
+/// Reads from an expanded MiniApp directory on disk or from bundle URLs.
+///
+/// Uses `Data(contentsOf:)` so that it works for both regular file URLs (iOS)
+/// and Android APK asset URLs accessed through `Bundle.module`.
+public final class MiniAppDirectoryPackage: MiniAppPackageReader {
+    /// The root URL of the expanded MiniApp directory.
+    public let rootURL: URL
+
+    private var cachedManifest: MiniAppManifest?
+
+    public init(rootURL: URL) {
+        self.rootURL = rootURL
+    }
+
+    override public func readManifest() throws -> MiniAppManifest {
+        if let cached = cachedManifest {
+            return cached
+        }
+        let data = try Data(contentsOf: rootURL.appendingPathComponent(MiniAppPackage.manifestPath))
+        let manifest = try JSONDecoder().decode(MiniAppManifest.self, from: data)
+        cachedManifest = manifest
+        return manifest
+    }
+
+    override public func readAppJS() throws -> Data? {
+        return try? Data(contentsOf: rootURL.appendingPathComponent(MiniAppPackage.appJSPath))
+    }
+
+    override public func readPageJS(pagePath: String) throws -> Data? {
+        return try? Data(contentsOf: rootURL.appendingPathComponent(pagePath + ".js"))
+    }
+}
+
 /// Reads a W3C MiniApp package (.ma ZIP container) as defined in the MiniApp Packaging specification.
-public class MiniAppPackage {
+public class MiniAppPackage: MiniAppPackageReader {
     /// The file path of the package.
     public let path: String
 
@@ -40,7 +94,7 @@ public class MiniAppPackage {
     }
 
     /// Read and parse the manifest from the package.
-    public func readManifest() throws -> MiniAppManifest {
+    override public func readManifest() throws -> MiniAppManifest {
         if let cached = cachedManifest {
             return cached
         }
@@ -92,7 +146,7 @@ public class MiniAppPackage {
     }
 
     /// Read the global app.js content.
-    public func readAppJS() throws -> Data? {
+    override public func readAppJS() throws -> Data? {
         return try readEntry(at: MiniAppPackage.appJSPath)
     }
 
@@ -112,7 +166,7 @@ public class MiniAppPackage {
     }
 
     /// Read the JS for a page route.
-    public func readPageJS(pagePath: String) throws -> Data? {
+    override public func readPageJS(pagePath: String) throws -> Data? {
         return try readEntry(at: pagePath + ".js")
     }
 
