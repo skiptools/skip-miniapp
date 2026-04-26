@@ -37,6 +37,8 @@ public struct MiniAppManifest: Codable, Hashable {
     public var widgets: [MiniAppWidget]?
     /// Requested system permissions.
     public var reqPermissions: [MiniAppPermission]?
+    /// Per-locale metadata localizations (W3C i18n key).
+    public var i18n: [String: MiniAppManifestLocalization]?
 
     enum CodingKeys: String, CodingKey {
         case appId = "app_id"
@@ -54,6 +56,7 @@ public struct MiniAppManifest: Codable, Hashable {
         case window
         case widgets
         case reqPermissions = "req_permissions"
+        case i18n
     }
 
     public init(
@@ -233,6 +236,25 @@ public struct MiniAppPermission: Codable, Hashable {
     public init(name: String, reason: String? = nil) {
         self.name = name
         self.reason = reason
+    }
+}
+
+/// Localized metadata for a specific locale (used in manifest.i18n).
+public struct MiniAppManifestLocalization: Codable, Hashable {
+    public var name: String?
+    public var shortName: String?
+    public var description: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case shortName = "short_name"
+        case description
+    }
+
+    public init(name: String? = nil, shortName: String? = nil, description: String? = nil) {
+        self.name = name
+        self.shortName = shortName
+        self.description = description
     }
 }
 #endif
