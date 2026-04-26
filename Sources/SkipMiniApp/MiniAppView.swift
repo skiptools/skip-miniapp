@@ -115,6 +115,12 @@ public struct MiniAppHostView: View {
                 handleNavigation(command: command, runtime: runtime)
             }
         }
+        .onChange(of: runtime?.pendingDataUpdate) { _, newValue in
+            if let jsonPatch = newValue {
+                pushDataToView(jsonPatch)
+                runtime?.pendingDataUpdate = nil
+            }
+        }
     }
 
     /// WebView configuration with message handlers and bridge user script.
@@ -128,71 +134,135 @@ public struct MiniAppHostView: View {
         return config
     }
 
-    /// JavaScript injected into each WebView page.
+    /// JavaScript injected into each WebView page for the View Layer.
     ///
-    /// Assembles the core bridge infrastructure plus each module's bridge script.
+    /// The View Layer has NO access to host APIs (storage, fetch, log). It can only:
+    /// 1. Receive data updates via `window.__miniappSetData(patch)`
+    /// 2. Send user events (taps, input) back to the Logic Layer via the bridge
+    ///
+    /// HTML elements use `data-bind="key"` for data display and
+    /// `data-event-tap="handlerName"` / `data-event-input="handlerName"` for events.
     private var bridgeUserScript: WebViewUserScript {
-        // Pre-populate the storage state for the FileSystemModule if present
-        var storageJSON = "{}"
-        if let rt = runtime, let fsModule = modules.first(where: { $0.module is MiniAppFileSystemModule })?.module as? MiniAppFileSystemModule {
-            storageJSON = fsModule.storageJSON(for: rt)
-        }
+        // Get initial page data from the runtime
+        let initialData = runtime?.initialDataJSON() ?? "{}"
 
-        // Collect module bridge scripts
-        var moduleScripts = ""
-        for moduleType in modules {
-            let script = moduleType.module.bridgeScript()
-            if !script.isEmpty {
-                moduleScripts += "\n" + script
-            }
-        }
-
-        let ns = namespace
         let script = """
         (function() {
-            var _ns = '\(ns)';
+            // --- View Layer data store (on window so native evaluateJavaScript can access it) ---
+            window._miniappData = \(initialData);
+            var _data = window._miniappData;
 
-            // --- MiniApp bridge setup ---
-            if (!window[_ns]) window[_ns] = {};
-            var _api = window[_ns];
-            var _callId = 0;
-            var _callbacks = {};
+            // Receive data patches from the Logic Layer (called by native bridge)
+            window.__miniappSetData = function(patch) {
+                var d = window._miniappData;
+                if (!d) { window._miniappData = {}; d = window._miniappData; }
+                // Path-based merge
+                var keys = Object.keys(patch);
+                for (var i = 0; i < keys.length; i++) {
+                    var key = keys[i];
+                    var val = patch[key];
+                    if (key.indexOf('.') === -1 && key.indexOf('[') === -1) {
+                        d[key] = val;
+                    } else {
+                        var parts = key.replace(/\\[/g, '.').replace(/\\]/g, '').split('.');
+                        var obj = d;
+                        for (var j = 0; j < parts.length - 1; j++) {
+                            if (obj[parts[j]] === undefined) obj[parts[j]] = {};
+                            obj = obj[parts[j]];
+                        }
+                        obj[parts[parts.length - 1]] = val;
+                    }
+                }
+                _data = d;
+                __renderData();
+            };
 
-            function sendMessage(action, data, callback) {
-                var id = ++_callId;
-                if (callback) { _callbacks[id] = callback; }
+            // Render data into bound DOM elements
+            function __renderData() {
+                var d = window._miniappData || {};
+                document.querySelectorAll('[data-bind]').forEach(function(el) {
+                    var key = el.getAttribute('data-bind');
+                    var val = __resolveKey(d, key);
+                    if (val === undefined || val === null) val = '';
+                    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+                        el.value = val;
+                    } else if (typeof val === 'boolean') {
+                        // For boolean bindings, toggle visibility or class
+                        if (el.hasAttribute('data-bind-class')) {
+                            var cls = el.getAttribute('data-bind-class');
+                            if (val) el.classList.add(cls);
+                            else el.classList.remove(cls);
+                        } else {
+                            el.textContent = String(val);
+                        }
+                    } else {
+                        el.textContent = String(val);
+                    }
+                });
+            }
+
+            // Resolve a potentially dotted/bracketed key path
+            function __resolveKey(obj, key) {
+                if (key.indexOf('.') === -1 && key.indexOf('[') === -1) return obj[key];
+                var parts = key.replace(/\\[/g, '.').replace(/\\]/g, '').split('.');
+                var current = obj;
+                for (var i = 0; i < parts.length; i++) {
+                    if (current === undefined || current === null) return undefined;
+                    current = current[parts[i]];
+                }
+                return current;
+            }
+
+            // --- Event system: View → Logic Layer ---
+            function sendEvent(type, handler, detail) {
                 try {
-                    webkit.messageHandlers.miniappBridge.postMessage(
-                        { callId: id, action: action, data: data }
-                    );
+                    webkit.messageHandlers.miniappBridge.postMessage({
+                        action: '__event',
+                        data: { type: type, handler: handler, detail: detail || {} }
+                    });
                 } catch(e) {}
             }
 
-            window._miniappBridgeResponse = function(callId, success, data) {
-                var cb = _callbacks[callId];
-                if (cb) {
-                    cb(success, data);
-                    delete _callbacks[callId];
+            // Tap events via data-event-tap="handlerName"
+            document.addEventListener('click', function(e) {
+                var el = e.target.closest('[data-event-tap]');
+                if (el) {
+                    var handler = el.getAttribute('data-event-tap');
+                    var dataset = {};
+                    for (var attr in el.dataset) {
+                        if (attr !== 'eventTap' && attr !== 'bind' && attr !== 'bindClass') {
+                            dataset[attr] = el.dataset[attr];
+                        }
+                    }
+                    sendEvent('tap', handler, { dataset: dataset });
                 }
-            };
+            });
 
-            // Pre-populated storage state for FileSystemModule
-            var _store = \(storageJSON);
+            // Input events via data-event-input="handlerName"
+            document.addEventListener('input', function(e) {
+                var el = e.target.closest('[data-event-input]');
+                if (el) {
+                    var handler = el.getAttribute('data-event-input');
+                    sendEvent('input', handler, { value: el.value });
+                }
+            });
 
-            // --- Core: Navigation ---
-            _api.navigateTo = function(options) {
-                sendMessage('navigateTo', { url: options.url || '', query: options.query || '' });
-            };
-            _api.navigateBack = function() {
-                sendMessage('navigateBack', {});
-            };
+            // Change events via data-event-change="handlerName"
+            document.addEventListener('change', function(e) {
+                var el = e.target.closest('[data-event-change]');
+                if (el) {
+                    var handler = el.getAttribute('data-event-change');
+                    sendEvent('change', handler, { value: el.value, checked: el.checked });
+                }
+            });
 
-            // --- Module bridge scripts ---
-            \(moduleScripts)
-
-            // Also expose under the standard "miniapp" name for W3C compatibility
-            if (_ns !== 'miniapp') {
-                window.miniapp = _api;
+            // Initial render with the data provided at page load
+            document.addEventListener('DOMContentLoaded', function() {
+                __renderData();
+            });
+            // Also render immediately in case DOM is already loaded
+            if (document.readyState !== 'loading') {
+                __renderData();
             }
         })();
         """
@@ -295,13 +365,14 @@ public struct MiniAppHostView: View {
         }
     }
 
-    /// Handle bridge messages from the WebView's JavaScript.
+    /// Handle bridge messages from the WebView (View Layer).
+    ///
+    /// In the dual-thread model, the only message type from the view is `__event`,
+    /// which dispatches user interactions (taps, input) to the Logic Layer's page handlers.
     @MainActor
     private func handleBridgeMessage(_ message: WebViewMessage) {
         guard let runtime = runtime else { return }
 
-        // On iOS, WKWebView auto-converts JS objects to NSDictionary.
-        // On Android, SkipWeb's router parses the JSON into a dictionary.
         let json: [String: Any]
         // SKIP NOWARN
         if let dict = message.body as? [String: Any] {
@@ -321,48 +392,32 @@ public struct MiniAppHostView: View {
               let data = json["data"] as? [String: Any] else {
             return
         }
-        let callId = json["callId"] as? Int ?? 0
 
-        // Core actions: navigation
         switch action {
-        case "navigateTo":
-            if let url = data["url"] as? String {
-                let query = data["query"] as? String ?? ""
-                runtime.pendingNavigation = MiniAppNavigationCommand(action: .push, pagePath: url, query: query)
+        case "__event":
+            // Dispatch user event from View Layer to Logic Layer.
+            // Build a full event object with type, detail, and dataset (matching WeChat's event model).
+            if let handlerName = data["handler"] as? String {
+                let eventType = data["type"] as? String ?? "tap"
+                let detail = data["detail"] as? [String: Any] ?? [:]
+                let fullEvent: [String: Any] = [
+                    "type": eventType,
+                    "detail": detail
+                ]
+                if let eventData = try? JSONSerialization.data(withJSONObject: fullEvent),
+                   let eventJSON = String(data: eventData, encoding: .utf8) {
+                    runtime.dispatchEvent(handlerName: handlerName, eventJSON: eventJSON)
+                }
             }
-            return
-        case "navigateBack":
-            runtime.pendingNavigation = MiniAppNavigationCommand(action: .pop)
-            return
         default:
             break
         }
-
-        // Delegate to modules
-        let respond: (Int, Bool, [String: Any]) -> Void = { callId, success, responseJSON in
-            self.sendBridgeResponseJSON(callId: callId, success: success, json: responseJSON)
-        }
-        for moduleType in modules {
-            if moduleType.module.handleBridgeMessage(action: action, data: data, callId: callId, runtime: runtime, respond: respond) {
-                return
-            }
-        }
     }
 
-    /// Send a string response back to the WebView JavaScript bridge.
-    private func sendBridgeResponse(callId: Int, success: Bool, data: String) {
-        let js = "window._miniappBridgeResponse(\(callId), \(success), '\(data.replacingOccurrences(of: "'", with: "\\'"))')"
-        Task { @MainActor in
-            let _ = try? await navigator.evaluateJavaScript(js)
-        }
-    }
-
-    /// Send a JSON object response back to the WebView JavaScript bridge.
-    private func sendBridgeResponseJSON(callId: Int, success: Bool, json: [String: Any]) {
-        guard let jsonData = try? JSONSerialization.data(withJSONObject: json),
-              let jsonString = String(data: jsonData, encoding: .utf8) else { return }
-        // Pass as a parsed object, not a string literal
-        let js = "window._miniappBridgeResponse(\(callId), \(success), \(jsonString))"
+    /// Push a setData patch from the Logic Layer to the View Layer's WebView.
+    private func pushDataToView(_ jsonPatch: String) {
+        let escaped = jsonPatch.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
+        let js = "window.__miniappSetData && window.__miniappSetData(JSON.parse('\(escaped)'))"
         Task { @MainActor in
             let _ = try? await navigator.evaluateJavaScript(js)
         }

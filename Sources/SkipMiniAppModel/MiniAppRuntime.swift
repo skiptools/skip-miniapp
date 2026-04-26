@@ -24,7 +24,7 @@ public struct MiniAppLogEntry: Identifiable {
     }
 }
 
-/// Holds the onLoad/onShow/onReady/onHide/onUnload JSValue callbacks for one page.
+/// Holds lifecycle callbacks, custom event handlers, and the data object for one page.
 /// Internal — JSValue is not a bridgeable type.
 class PageCallbackSet {
     var onLoad: JSValue?
@@ -32,6 +32,15 @@ class PageCallbackSet {
     var onReady: JSValue?
     var onHide: JSValue?
     var onUnload: JSValue?
+
+    /// The page's data object in the JSContext (this.data).
+    var data: JSValue?
+
+    /// The full Page config object, used for calling custom handlers via `this.handlerName()`.
+    var pageInstance: JSValue?
+
+    /// Names of custom event handlers defined on this page.
+    var handlerNames: [String] = []
 
     init() {}
 }
@@ -69,6 +78,10 @@ public enum MiniAppNavigationAction: String, Equatable {
 
     /// Pending navigation command set by JS, observed by the view layer.
     public var pendingNavigation: MiniAppNavigationCommand?
+
+    /// Pending data update from setData(), observed by the view layer.
+    /// Contains the JSON string of the patch to apply to the view's data.
+    public var pendingDataUpdate: String?
 
     /// Current page stack (array of page paths).
     public var pageStack: [String] = []
@@ -148,6 +161,47 @@ public enum MiniAppNavigationAction: String, Equatable {
         logEntries.append(entry)
     }
 
+    /// Get the initial data JSON for the current page (for the view layer's first render).
+    public func initialDataJSON() -> String {
+        guard let pagePath = currentPage,
+              let callbacks = pageCallbacks[pagePath],
+              let data = callbacks.data else { return "{}" }
+        if let stringify = context.evaluateScript("JSON.stringify"),
+           let result = try? stringify.call(withArguments: [data]) {
+            return result.toString() ?? "{}"
+        }
+        return "{}"
+    }
+
+    /// Dispatch a view-layer event to the logic layer's page handler.
+    ///
+    /// - Parameters:
+    ///   - handlerName: The name of the handler method on the Page instance (e.g., "onTap").
+    ///   - eventJSON: JSON string of the event detail object.
+    public func dispatchEvent(handlerName: String, eventJSON: String) {
+        guard let pagePath = currentPage,
+              let callbacks = pageCallbacks[pagePath],
+              let pageInstance = callbacks.pageInstance else { return }
+
+        // Use a JS helper to call the handler with the correct `this` context (the page instance).
+        // handler.call(withArguments:) loses `this`, so we must invoke via the page object.
+        let safeHandler = handlerName.replacingOccurrences(of: "'", with: "\\'")
+        let safeJSON = eventJSON.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'").replacingOccurrences(of: "\n", with: "\\n")
+
+        // Store the page instance temporarily for access from JS
+        context.setObject(pageInstance, forKeyedSubscript: "__currentPage")
+        _ = context.evaluateScript("""
+        (function() {
+            var page = __currentPage;
+            var handler = page['\(safeHandler)'];
+            if (typeof handler === 'function') {
+                var event = JSON.parse('\(safeJSON)');
+                handler.call(page, event);
+            }
+        })();
+        """)
+    }
+
     // MARK: - Module Helpers
 
     /// The JSContext for module registration. Internal to the framework.
@@ -185,27 +239,97 @@ public enum MiniAppNavigationAction: String, Equatable {
         context.setObject(fn, forKeyedSubscript: "App")
     }
 
-    /// Register the global Page({...}) function that captures per-page lifecycle callbacks.
+    /// Register the global Page({...}) function that captures per-page lifecycle callbacks,
+    /// initial data, custom event handlers, and installs setData() on the page instance.
     private func registerPageFunction() {
         let runtime = self
         let fn = JSValue(newFunctionIn: context) { ctx, obj, args in
-            if let options = args.first, options.isObject {
-                let callbacks = PageCallbackSet()
-
-                let onLoad = options.objectForKeyedSubscript("onLoad")
-                if onLoad.isFunction { callbacks.onLoad = onLoad }
-                let onShow = options.objectForKeyedSubscript("onShow")
-                if onShow.isFunction { callbacks.onShow = onShow }
-                let onReady = options.objectForKeyedSubscript("onReady")
-                if onReady.isFunction { callbacks.onReady = onReady }
-                let onHide = options.objectForKeyedSubscript("onHide")
-                if onHide.isFunction { callbacks.onHide = onHide }
-                let onUnload = options.objectForKeyedSubscript("onUnload")
-                if onUnload.isFunction { callbacks.onUnload = onUnload }
-
-                let pagePath = runtime.currentPagePath
-                runtime.pageCallbacks[pagePath] = callbacks
+            guard let options = args.first, options.isObject else {
+                return JSValue(undefinedIn: ctx)
             }
+            let callbacks = PageCallbackSet()
+
+            // Capture lifecycle callbacks
+            let onLoad = options.objectForKeyedSubscript("onLoad")
+            if onLoad.isFunction { callbacks.onLoad = onLoad }
+            let onShow = options.objectForKeyedSubscript("onShow")
+            if onShow.isFunction { callbacks.onShow = onShow }
+            let onReady = options.objectForKeyedSubscript("onReady")
+            if onReady.isFunction { callbacks.onReady = onReady }
+            let onHide = options.objectForKeyedSubscript("onHide")
+            if onHide.isFunction { callbacks.onHide = onHide }
+            let onUnload = options.objectForKeyedSubscript("onUnload")
+            if onUnload.isFunction { callbacks.onUnload = onUnload }
+
+            // Deep-copy the initial data object via JSON round-trip in JS
+            let dataVal = options.objectForKeyedSubscript("data")
+            if dataVal.isObject {
+                // Store data temporarily so we can JSON-clone it safely
+                ctx.setObject(dataVal, forKeyedSubscript: "__tmpData")
+                let cloned = ctx.evaluateScript("JSON.parse(JSON.stringify(__tmpData))")
+                _ = ctx.evaluateScript("delete __tmpData")
+                callbacks.data = cloned
+            } else {
+                callbacks.data = ctx.evaluateScript("({})")
+            }
+
+            // Store the options object as the page instance (it holds custom handler methods)
+            callbacks.pageInstance = options
+
+            // Give the page instance access to its data
+            if let pageData = callbacks.data as? JSValue {
+                options.setObject(pageData, forKeyedSubscript: "data")
+            }
+
+            // Install setData() on the page instance
+            let setDataFn = JSValue(newFunctionIn: ctx) { ctx2, thisObj, setDataArgs in
+                guard let patch = setDataArgs.first, patch.isObject else {
+                    return JSValue(undefinedIn: ctx2)
+                }
+                // Merge patch into this.data using path-based keys
+                // Use a JS helper to handle dot paths like "items[0].name"
+                let _ = try? ctx2.evaluateScript("""
+                (function(target, patch) {
+                    var keys = Object.keys(patch);
+                    for (var i = 0; i < keys.length; i++) {
+                        var key = keys[i];
+                        var val = patch[key];
+                        if (key.indexOf('.') === -1 && key.indexOf('[') === -1) {
+                            target[key] = val;
+                        } else {
+                            var parts = key.replace(/\\[/g, '.').replace(/\\]/g, '').split('.');
+                            var obj = target;
+                            for (var j = 0; j < parts.length - 1; j++) {
+                                if (obj[parts[j]] === undefined) obj[parts[j]] = {};
+                                obj = obj[parts[j]];
+                            }
+                            obj[parts[parts.length - 1]] = val;
+                        }
+                    }
+                })
+                """)?.call(withArguments: [callbacks.data ?? JSValue(newObjectIn: ctx2), patch])
+
+                // Serialize the patch and push to the view layer
+                if let stringify = ctx2.evaluateScript("JSON.stringify"),
+                   let result = try? stringify.call(withArguments: [patch]),
+                   let jsonStr = result.toString() as String? {
+                    runtime.pendingDataUpdate = jsonStr
+                }
+
+                // Call the optional callback (second arg)
+                if setDataArgs.count > 1 {
+                    let cb = setDataArgs[1]
+                    if cb.isFunction {
+                        let _ = try? cb.call(withArguments: [])
+                    }
+                }
+                return JSValue(undefinedIn: ctx2)
+            }
+            options.setObject(setDataFn, forKeyedSubscript: "setData")
+
+            let pagePath = runtime.currentPagePath
+            runtime.pageCallbacks[pagePath] = callbacks
+
             return JSValue(undefinedIn: ctx)
         }
         context.setObject(fn, forKeyedSubscript: "Page")

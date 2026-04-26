@@ -4,54 +4,28 @@
 #if !SKIP_BRIDGE
 import Foundation
 import SkipScript
+// SKIP NOWARN
 
 extension MiniAppModuleType {
-    /// Network module providing the Fetch API.
+    /// Network module providing the Fetch API in the Logic Layer.
     public static let network = MiniAppModuleType(MiniAppNetworkModule())
 }
 
-/// MiniApp module providing the Fetch API for HTTP requests.
+/// MiniApp module providing the Fetch API for HTTP requests in the Logic Layer.
 ///
 /// Exposes `fetch(url, options)` which returns a Promise resolving to a Response
 /// object with `.ok`, `.status`, `.headers`, `.json()`, and `.text()` methods.
+/// Only available to app.js and page.js code (not the WebView).
 public final class MiniAppNetworkModule: MiniAppModule {
 
     public override init() {
         super.init()
     }
 
-    override public func bridgeScript() -> String {
-        return """
-            // --- Fetch API: _api.fetch(url, options) -> Promise<Response> ---
-            _api.fetch = function(url, options) {
-                return new Promise(function(resolve, reject) {
-                    sendMessage('fetch', {
-                        url: url,
-                        method: (options && options.method) || 'GET',
-                        headers: (options && options.headers) || {},
-                        body: (options && options.body) || null
-                    }, function(success, responseData) {
-                        if (success && responseData) {
-                            resolve({
-                                ok: responseData.status >= 200 && responseData.status < 300,
-                                status: responseData.status,
-                                headers: responseData.headers || {},
-                                body: responseData.body || '',
-                                json: function() { return Promise.resolve(JSON.parse(this.body)); },
-                                text: function() { return Promise.resolve(this.body); }
-                            });
-                        } else {
-                            reject(new Error((responseData && responseData.message) || 'Network error'));
-                        }
-                    });
-                });
-            };
-        """
-    }
-
     override public func registerInRuntime(_ runtime: MiniAppRuntime) {
         let context = runtime.jsContext
         guard let namespace = runtime.namespaceObject else { return }
+
         // Register native fetch helper that receives resolve/reject from a Promise
         let nativeFetchFn = JSValue(newFunctionIn: context) { ctx, obj, args in
             guard args.count >= 6 else { return JSValue(undefinedIn: ctx) }
@@ -130,45 +104,6 @@ public final class MiniAppNetworkModule: MiniAppModule {
         if let fetchRef = context.evaluateScript("fetch") {
             namespace.setObject(fetchRef, forKeyedSubscript: "fetch")
         }
-    }
-
-    override public func handleBridgeMessage(action: String, data: [String: Any], callId: Int, runtime: MiniAppRuntime, respond: @escaping (Int, Bool, [String: Any]) -> Void) -> Bool {
-        guard action == "fetch" else { return false }
-
-        let urlString = data["url"] as? String ?? ""
-        let method = data["method"] as? String ?? "GET"
-        // SKIP NOWARN
-        let headers = data["headers"] as? [String: Any] ?? [:]
-        let body = data["body"] as? String
-
-        guard let url = URL(string: urlString) else {
-            respond(callId, false, ["message": "Invalid URL: \(urlString)"])
-            return true
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        for (key, value) in headers {
-            request.setValue(String(describing: value), forHTTPHeaderField: key)
-        }
-        if let body = body {
-            request.httpBody = body.data(using: .utf8)
-        }
-
-        nonisolated(unsafe) let safeRespond = respond
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            DispatchQueue.main.async {
-                if let error = error {
-                    safeRespond(callId, false, ["message": error.localizedDescription])
-                } else {
-                    let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 200
-                    let bodyString = data.flatMap({ String(data: $0, encoding: .utf8) }) ?? ""
-                    safeRespond(callId, true, ["status": statusCode, "body": bodyString, "headers": [String: String]()])
-                }
-            }
-        }.resume()
-
-        return true
     }
 }
 #endif
