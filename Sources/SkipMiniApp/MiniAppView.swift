@@ -155,10 +155,10 @@ public struct MiniAppHostView: View {
     private var bridgeUserScript: WebViewUserScript {
         let initialData = runtime?.initialDataJSON() ?? "{}"
         let handlerNames = runtime?.pageHandlerNames() ?? []
+        let translationsJSON = runtime?.i18nModule?.translationsJSON() ?? "{}"
+        let activeLocale = runtime?.i18nModule?.activeLocale ?? "en"
 
         // Generate handler function properties for the Alpine component.
-        // This allows @click="onSaveNote" instead of @click="handler('onSaveNote')"
-        // because the CSP parser needs the property to exist on the component scope.
         var handlerProps = ""
         for name in handlerNames {
             let safeName = name.replacingOccurrences(of: "'", with: "\\'")
@@ -186,8 +186,30 @@ public struct MiniAppHostView: View {
             } catch(e) {}
         };
 
+        // --- Internationalization ---
+        window.__i18nMessages = JSON.parse('\(Self.escapeJSString(translationsJSON))');
+        window.__i18nLocale = '\(Self.escapeJSString(activeLocale))';
+        window.__i18nTranslate = function(key, params) {
+            var msg = window.__i18nMessages[key] || key;
+            if (params) {
+                var keys = Object.keys(params);
+                for (var i = 0; i < keys.length; i++) {
+                    var k = keys[i];
+                    msg = msg.split('{' + k + '}').join(String(params[k]));
+                }
+            }
+            return msg;
+        };
+
         // --- Alpine initialization ---
         document.addEventListener('alpine:init', function() {
+            // Register $t magic for localization in templates
+            Alpine.magic('t', function() {
+                return function(key, params) {
+                    return window.__i18nTranslate(key, params);
+                };
+            });
+
             // Register the reactive page data store
             Alpine.store('page', \(initialData));
 
@@ -420,6 +442,14 @@ public struct MiniAppHostView: View {
         Task { @MainActor in
             let _ = try? await navigator.evaluateJavaScript(js)
         }
+    }
+
+    /// Escape a string for safe embedding in a JavaScript single-quoted string.
+    private static func escapeJSString(_ str: String) -> String {
+        return str.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
     }
 }
 

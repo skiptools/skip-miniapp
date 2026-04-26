@@ -106,8 +106,11 @@ public enum MiniAppNavigationAction: String, Equatable {
     /// The JavaScript namespace name for the bridge API (e.g. "miniapp" or "skip").
     public let namespace: String
 
-    /// Sandboxed key-value storage for miniapp.getStorageSync/setStorageSync.
-    public let storage: MiniAppStorage
+    /// OPFS-style sandboxed file system for this MiniApp. Set by the FileSystemModule.
+    public var fileSystem: MiniAppFileSystem?
+
+    /// I18n module reference for the view layer to access translations. Set by MiniAppI18nModule.
+    public var i18nModule: MiniAppI18nModule?
 
     /// Log entries captured from `skip.log()` calls, available for host UI.
     public var logEntries: [MiniAppLogEntry] = []
@@ -133,21 +136,13 @@ public enum MiniAppNavigationAction: String, Equatable {
     /// - Parameters:
     ///   - package: Source for reading app.js and page JS files.
     ///   - manifest: The parsed MiniApp manifest.
-    ///   - storage: Storage backend. Defaults to in-memory storage scoped to this app's ID.
     ///   - namespace: The JavaScript global name for the bridge API. Defaults to `"miniapp"`.
     ///   - modules: API modules to register. Each module provides JS bridge code, JSContext APIs, and message handlers.
-    public init(package: MiniAppPackageReader, manifest: MiniAppManifest, storage: MiniAppStorage? = nil, namespace: String = "miniapp", modules: [MiniAppModuleType]? = nil) {
+    public init(package: MiniAppPackageReader, manifest: MiniAppManifest, namespace: String = "miniapp", modules: [MiniAppModuleType]? = nil) {
         self.package = package
         self.manifest = manifest
         self.namespace = namespace
-        // Default to all built-in modules when none are specified
         self.modules = modules ?? [MiniAppModuleType(MiniAppFileSystemModule()), MiniAppModuleType(MiniAppNetworkModule()), MiniAppModuleType(MiniAppLoggingModule())]
-        // Derive storage from the FileSystemModule if present, otherwise use provided or default
-        if let fsModule = self.modules.first(where: { $0.module is MiniAppFileSystemModule })?.module as? MiniAppFileSystemModule {
-            self.storage = storage ?? MiniAppStorage(appId: manifest.appId, mode: fsModule.storageMode)
-        } else {
-            self.storage = storage ?? MiniAppStorage(appId: manifest.appId, mode: .inMemory)
-        }
         self.context = JSContext()
         self.lifecycle = MiniAppLifecycle()
 

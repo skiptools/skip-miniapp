@@ -33,6 +33,11 @@ open class MiniAppPackageReader {
     open func readPageJS(pagePath: String) throws -> Data? {
         return nil
     }
+
+    /// Read a raw entry by path. Returns nil if not found.
+    open func readEntry(at path: String) throws -> Data? {
+        return nil
+    }
 }
 
 /// Reads from an expanded MiniApp directory on disk or from bundle URLs.
@@ -65,6 +70,10 @@ public final class MiniAppDirectoryPackage: MiniAppPackageReader {
 
     override public func readPageJS(pagePath: String) throws -> Data? {
         return try? Data(contentsOf: rootURL.appendingPathComponent(pagePath + ".js"))
+    }
+
+    override public func readEntry(at path: String) throws -> Data? {
+        return try? Data(contentsOf: rootURL.appendingPathComponent(path))
     }
 }
 
@@ -107,7 +116,7 @@ public class MiniAppPackage: MiniAppPackageReader {
     }
 
     /// Read a specific entry from the package by its path within the archive.
-    public func readEntry(at entryPath: String) throws -> Data? {
+    override public func readEntry(at entryPath: String) throws -> Data? {
         guard let reader = ZipReader(path: path) else {
             throw MiniAppError.cannotOpenPackage
         }

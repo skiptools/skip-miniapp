@@ -938,250 +938,474 @@ final class SkipMiniAppModelTests: XCTestCase {
         runtime.evaluateScript("console.log('multiple', 'arguments', 123)")
     }
 
-    func testRuntimeStorage() throws {
-        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
-        let runtime = MiniAppRuntime(package: pkg, manifest: manifest)
-        runtime.start()
+    // MARK: - OPFS File System Tests
 
-        // Set a value
-        runtime.evaluateScript("miniapp.setStorageSync('testKey', 'testValue')")
-
-        // Get the value
-        let result = runtime.evaluateScript("miniapp.getStorageSync('testKey')")
-        XCTAssertEqual(result, "testValue")
-
-        // Override the value
-        runtime.evaluateScript("miniapp.setStorageSync('testKey', 'newValue')")
-        let result2 = runtime.evaluateScript("miniapp.getStorageSync('testKey')")
-        XCTAssertEqual(result2, "newValue")
-
-        // Remove the value
-        runtime.evaluateScript("miniapp.removeStorageSync('testKey')")
-        XCTAssertTrue(runtime.evaluateScriptIsUndefined("miniapp.getStorageSync('testKey')"))
-
-        // Get nonexistent key
-        XCTAssertTrue(runtime.evaluateScriptIsUndefined("miniapp.getStorageSync('nonexistent')"))
-    }
-
-    // MARK: - MiniAppStorage Tests
-
-    func testStorageInMemoryBasicOperations() throws {
-        let storage = MiniAppStorage(appId: "com.example.test", mode: .inMemory)
-
-        XCTAssertNil(storage.get("key1"))
-
-        storage.set("key1", value: "value1")
-        XCTAssertEqual(storage.get("key1"), "value1")
-
-        storage.set("key1", value: "updated")
-        XCTAssertEqual(storage.get("key1"), "updated")
-
-        storage.remove("key1")
-        XCTAssertNil(storage.get("key1"))
-    }
-
-    func testStorageKeys() throws {
-        let storage = MiniAppStorage(appId: "com.example.test", mode: .inMemory)
-
-        XCTAssertEqual(storage.keys().count, 0)
-
-        storage.set("a", value: "1")
-        storage.set("b", value: "2")
-        storage.set("c", value: "3")
-
-        let keys = storage.keys().sorted()
-        XCTAssertEqual(keys, ["a", "b", "c"])
-    }
-
-    func testStorageClear() throws {
-        let storage = MiniAppStorage(appId: "com.example.test", mode: .inMemory)
-        storage.set("a", value: "1")
-        storage.set("b", value: "2")
-
-        storage.clear()
-        XCTAssertEqual(storage.keys().count, 0)
-        XCTAssertNil(storage.get("a"))
-    }
-
-    func testStoragePersistentWriteAndRead() throws {
+    func testFSCreateAndReadFile() throws {
         let tempDir = try createTempDirectory()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let appId = "com.example.persistent"
-
-        // Write data
-        let storage1 = MiniAppStorage(appId: appId, mode: .persistent(baseDirectory: tempDir))
-        storage1.set("name", value: "MiniApp")
-        storage1.set("count", value: "42")
-
-        // Read with a new instance — should find persisted data
-        let storage2 = MiniAppStorage(appId: appId, mode: .persistent(baseDirectory: tempDir))
-        XCTAssertEqual(storage2.get("name"), "MiniApp")
-        XCTAssertEqual(storage2.get("count"), "42")
+        let fs = MiniAppFileSystem(appId: "com.example.fstest", baseDirectory: tempDir)
+        let _ = try fs.getFileHandle(at: "hello.txt", create: true)
+        try fs.writeFile(at: "hello.txt", content: "Hello, world!")
+        let content = try fs.readFile(at: "hello.txt")
+        XCTAssertEqual(content, "Hello, world!")
     }
 
-    func testStoragePersistentRemoveAndClear() throws {
+    func testFSReadNonexistentFileThrows() throws {
         let tempDir = try createTempDirectory()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let appId = "com.example.cleartest"
-        let storage = MiniAppStorage(appId: appId, mode: .persistent(baseDirectory: tempDir))
-        storage.set("a", value: "1")
-        storage.set("b", value: "2")
-        storage.remove("a")
-
-        // Reload
-        let storage2 = MiniAppStorage(appId: appId, mode: .persistent(baseDirectory: tempDir))
-        XCTAssertNil(storage2.get("a"))
-        XCTAssertEqual(storage2.get("b"), "2")
-
-        storage2.clear()
-        let storage3 = MiniAppStorage(appId: appId, mode: .persistent(baseDirectory: tempDir))
-        XCTAssertEqual(storage3.keys().count, 0)
-    }
-
-    func testStorageCrossAppIsolation() throws {
-        let tempDir = try createTempDirectory()
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-
-        let storageA = MiniAppStorage(appId: "com.example.appA", mode: .persistent(baseDirectory: tempDir))
-        let storageB = MiniAppStorage(appId: "com.example.appB", mode: .persistent(baseDirectory: tempDir))
-
-        storageA.set("secret", value: "alpha")
-        storageB.set("secret", value: "beta")
-
-        // Each app sees only its own data
-        XCTAssertEqual(storageA.get("secret"), "alpha")
-        XCTAssertEqual(storageB.get("secret"), "beta")
-
-        // Reload and verify isolation persists
-        let reloadA = MiniAppStorage(appId: "com.example.appA", mode: .persistent(baseDirectory: tempDir))
-        let reloadB = MiniAppStorage(appId: "com.example.appB", mode: .persistent(baseDirectory: tempDir))
-        XCTAssertEqual(reloadA.get("secret"), "alpha")
-        XCTAssertEqual(reloadB.get("secret"), "beta")
-    }
-
-    func testStorageDirectoryURL() throws {
-        let tempDir = try createTempDirectory()
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-
-        let storage = MiniAppStorage(appId: "com.example.dir", mode: .persistent(baseDirectory: tempDir))
-        let dirURL = storage.storageDirectoryURL
-        XCTAssertNotNil(dirURL)
-        XCTAssertTrue(dirURL?.path.contains("com.example.dir") == true)
-
-        // In-memory mode has no directory
-        let memStorage = MiniAppStorage(appId: "com.example.mem", mode: .inMemory)
-        XCTAssertNil(memStorage.storageDirectoryURL)
-    }
-
-    func testStorageDirectoryURLForAppId() throws {
-        let baseDir = URL(fileURLWithPath: "/tmp/miniapp-storage")
-        let url = MiniAppStorage.storageDirectoryURL(forAppId: "com.example.lookup", baseDirectory: baseDir)
-        XCTAssertTrue(url.path.contains("com.example.lookup"))
-    }
-
-    func testStorageKeyValidation() throws {
-        // Invalid keys should throw
-        do { try MiniAppStorage.validateKey(""); XCTFail("Expected error for empty key") } catch { }
-        do { try MiniAppStorage.validateKey("path/traversal"); XCTFail("Expected error for / in key") } catch { }
-        do { try MiniAppStorage.validateKey(".."); XCTFail("Expected error for .. key") } catch { }
-        do { try MiniAppStorage.validateKey("bad\\key"); XCTFail("Expected error for \\ in key") } catch { }
-        // Valid keys should not throw
-        try MiniAppStorage.validateKey("valid_key")
-        try MiniAppStorage.validateKey("simple")
-    }
-
-    func testStorageAppIdValidation() throws {
-        do { try MiniAppStorage.validateAppId(""); XCTFail("Expected error for empty app ID") } catch { }
-        do { try MiniAppStorage.validateAppId("../../etc"); XCTFail("Expected error for traversal") } catch { }
-        do { try MiniAppStorage.validateAppId("bad/id"); XCTFail("Expected error for / in app ID") } catch { }
-        try MiniAppStorage.validateAppId("com.example.valid")
-    }
-
-    func testStorageAppIdSanitization() throws {
-        let tempDir = try createTempDirectory()
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-
-        // App IDs with special characters get sanitized
-        let storage = MiniAppStorage(appId: "com.example/../../attack", mode: .persistent(baseDirectory: tempDir))
-        let dirURL = storage.storageDirectoryURL
-        // The path should NOT contain traversal sequences
-        XCTAssertNotNil(dirURL)
-        XCTAssertFalse(dirURL?.path.contains("..") == true)
-    }
-
-    func testRuntimeStorageWithMiniAppStorage() throws {
-        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
-        let storage = MiniAppStorage(appId: manifest.appId, mode: .inMemory)
-        let runtime = MiniAppRuntime(package: pkg, manifest: manifest, storage: storage)
-        runtime.start()
-
-        // JS writes go through MiniAppStorage
-        runtime.evaluateScript("miniapp.setStorageSync('jsKey', 'jsValue')")
-        XCTAssertEqual(storage.get("jsKey"), "jsValue")
-
-        // MiniAppStorage writes are visible from JS
-        storage.set("nativeKey", value: "nativeValue")
-        let result = runtime.evaluateScript("miniapp.getStorageSync('nativeKey')")
-        XCTAssertEqual(result, "nativeValue")
-    }
-
-    func testRuntimeStorageGetKeys() throws {
-        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
-        let runtime = MiniAppRuntime(package: pkg, manifest: manifest)
-        runtime.start()
-
-        runtime.evaluateScript("miniapp.setStorageSync('a', '1')")
-        runtime.evaluateScript("miniapp.setStorageSync('b', '2')")
-
-        let keysJSON = runtime.evaluateScript("JSON.stringify(miniapp.getStorageKeys())")
-        XCTAssertNotNil(keysJSON)
-        // Parse the JSON array and check it contains both keys
-        if let data = keysJSON?.data(using: .utf8),
-           let arr = try? JSONSerialization.jsonObject(with: data) as? [String] {
-            XCTAssertTrue(arr.contains("a"))
-            XCTAssertTrue(arr.contains("b"))
-        } else {
-            XCTFail("Failed to parse storage keys JSON: \(keysJSON ?? "nil")")
+        let fs = MiniAppFileSystem(appId: "com.example.fstest", baseDirectory: tempDir)
+        do {
+            let _ = try fs.getFileHandle(at: "missing.txt", create: false)
+            XCTFail("Expected NotFoundError")
+        } catch let error as MiniAppFileSystemError {
+            XCTAssertEqual(error.name, "NotFoundError")
         }
     }
 
-    func testRuntimeStorageClear() throws {
-        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
-        let runtime = MiniAppRuntime(package: pkg, manifest: manifest)
-        runtime.start()
+    func testFSCreateDirectory() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        runtime.evaluateScript("miniapp.setStorageSync('x', '1')")
-        runtime.evaluateScript("miniapp.clearStorage()")
-
-        XCTAssertTrue(runtime.evaluateScriptIsUndefined("miniapp.getStorageSync('x')"))
-        let keysJSON = runtime.evaluateScript("JSON.stringify(miniapp.getStorageKeys())")
-        XCTAssertEqual(keysJSON, "[]")
+        let fs = MiniAppFileSystem(appId: "com.example.fstest", baseDirectory: tempDir)
+        let _ = try fs.getDirectoryHandle(at: "subdir", create: true)
+        let entries = try fs.entries(at: "")
+        XCTAssertTrue(entries.contains(where: { $0.name == "subdir" && $0.kind == "directory" }))
     }
 
-    func testRuntimePersistentStorageAcrossInstances() throws {
+    func testFSGetDirectoryWithoutCreateThrows() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fs = MiniAppFileSystem(appId: "com.example.fstest", baseDirectory: tempDir)
+        do {
+            let _ = try fs.getDirectoryHandle(at: "nope", create: false)
+            XCTFail("Expected NotFoundError")
+        } catch let error as MiniAppFileSystemError {
+            XCTAssertEqual(error.name, "NotFoundError")
+        }
+    }
+
+    func testFSNestedDirectories() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fs = MiniAppFileSystem(appId: "com.example.fstest", baseDirectory: tempDir)
+        let _ = try fs.getDirectoryHandle(at: "a/b/c", create: true)
+        let _ = try fs.getFileHandle(at: "a/b/c/deep.txt", create: true)
+        try fs.writeFile(at: "a/b/c/deep.txt", content: "nested")
+        XCTAssertEqual(try fs.readFile(at: "a/b/c/deep.txt"), "nested")
+    }
+
+    func testFSEntries() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fs = MiniAppFileSystem(appId: "com.example.fstest", baseDirectory: tempDir)
+        let _ = try fs.getFileHandle(at: "file1.txt", create: true)
+        let _ = try fs.getFileHandle(at: "file2.txt", create: true)
+        let _ = try fs.getDirectoryHandle(at: "dir1", create: true)
+
+        let entries = try fs.entries(at: "")
+        XCTAssertEqual(entries.count, 3)
+        XCTAssertTrue(entries.contains(where: { $0.name == "file1.txt" && $0.kind == "file" }))
+        XCTAssertTrue(entries.contains(where: { $0.name == "dir1" && $0.kind == "directory" }))
+    }
+
+    func testFSRemoveFile() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fs = MiniAppFileSystem(appId: "com.example.fstest", baseDirectory: tempDir)
+        let _ = try fs.getFileHandle(at: "temp.txt", create: true)
+        try fs.removeEntry(at: "temp.txt", recursive: false)
+        do {
+            let _ = try fs.getFileHandle(at: "temp.txt", create: false)
+            XCTFail("File should be deleted")
+        } catch { }
+    }
+
+    func testFSRemoveNonEmptyDirWithoutRecursiveThrows() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fs = MiniAppFileSystem(appId: "com.example.fstest", baseDirectory: tempDir)
+        let _ = try fs.getDirectoryHandle(at: "dir", create: true)
+        let _ = try fs.getFileHandle(at: "dir/file.txt", create: true)
+        do {
+            try fs.removeEntry(at: "dir", recursive: false)
+            XCTFail("Expected InvalidModificationError")
+        } catch let error as MiniAppFileSystemError {
+            XCTAssertEqual(error.name, "InvalidModificationError")
+        }
+    }
+
+    func testFSRemoveDirectoryRecursive() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fs = MiniAppFileSystem(appId: "com.example.fstest", baseDirectory: tempDir)
+        let _ = try fs.getDirectoryHandle(at: "dir", create: true)
+        let _ = try fs.getFileHandle(at: "dir/file.txt", create: true)
+        try fs.removeEntry(at: "dir", recursive: true)
+        let entries = try fs.entries(at: "")
+        XCTAssertFalse(entries.contains(where: { $0.name == "dir" }))
+    }
+
+    func testFSFileSize() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fs = MiniAppFileSystem(appId: "com.example.fstest", baseDirectory: tempDir)
+        let _ = try fs.getFileHandle(at: "sized.txt", create: true)
+        try fs.writeFile(at: "sized.txt", content: "12345")
+        let size = try fs.fileSize(at: "sized.txt")
+        XCTAssertEqual(size, 5)
+    }
+
+    func testFSOverwriteFile() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fs = MiniAppFileSystem(appId: "com.example.fstest", baseDirectory: tempDir)
+        let _ = try fs.getFileHandle(at: "data.txt", create: true)
+        try fs.writeFile(at: "data.txt", content: "first")
+        try fs.writeFile(at: "data.txt", content: "second")
+        XCTAssertEqual(try fs.readFile(at: "data.txt"), "second")
+    }
+
+    func testFSCrossAppIsolation() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fsA = MiniAppFileSystem(appId: "com.example.appA", baseDirectory: tempDir)
+        let fsB = MiniAppFileSystem(appId: "com.example.appB", baseDirectory: tempDir)
+
+        let _ = try fsA.getFileHandle(at: "secret.txt", create: true)
+        try fsA.writeFile(at: "secret.txt", content: "alpha")
+
+        // App B should NOT see App A's file
+        do {
+            let _ = try fsB.getFileHandle(at: "secret.txt", create: false)
+            XCTFail("App B should not see App A's files")
+        } catch { }
+    }
+
+    func testFSPathTraversalPrevention() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fs = MiniAppFileSystem(appId: "com.example.fstest", baseDirectory: tempDir)
+        do {
+            try fs.validatePath("../escape")
+            XCTFail("Expected SecurityError for path traversal")
+        } catch let error as MiniAppFileSystemError {
+            XCTAssertEqual(error.name, "SecurityError")
+        }
+        do {
+            try fs.validatePath("/absolute")
+            XCTFail("Expected SecurityError for absolute path")
+        } catch let error as MiniAppFileSystemError {
+            XCTAssertEqual(error.name, "SecurityError")
+        }
+    }
+
+    func testFSTypeMismatchError() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fs = MiniAppFileSystem(appId: "com.example.fstest", baseDirectory: tempDir)
+        let _ = try fs.getDirectoryHandle(at: "mydir", create: true)
+        do {
+            let _ = try fs.getFileHandle(at: "mydir", create: false)
+            XCTFail("Expected TypeMismatchError")
+        } catch let error as MiniAppFileSystemError {
+            XCTAssertEqual(error.name, "TypeMismatchError")
+        }
+    }
+
+    // MARK: - OPFS Runtime Integration Tests
+
+    func testJSCreateAndReadFile() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
+        let fsModule = MiniAppFileSystemModule(baseDirectory: tempDir)
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest, modules: [MiniAppModuleType(fsModule)])
+        runtime.start()
+
+        runtime.evaluateScript("miniapp.fs.root.getFileHandle('test.txt', {create: true}).write('hello from JS')")
+        let result = runtime.evaluateScript("miniapp.fs.root.getFileHandle('test.txt').read()")
+        XCTAssertEqual(result, "hello from JS")
+    }
+
+    func testJSDirectoryOperations() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
+        let fsModule = MiniAppFileSystemModule(baseDirectory: tempDir)
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest, modules: [MiniAppModuleType(fsModule)])
+        runtime.start()
+
+        runtime.evaluateScript("miniapp.fs.root.getDirectoryHandle('docs', {create: true})")
+        runtime.evaluateScript("miniapp.fs.root.getFileHandle('docs/readme.txt', {create: true}).write('readme')")
+
+        let entriesJSON = runtime.evaluateScript("JSON.stringify(miniapp.fs.root.entries())")
+        XCTAssertNotNil(entriesJSON)
+        XCTAssertTrue(entriesJSON?.contains("docs") == true)
+    }
+
+    func testJSFileSize() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
+        let fsModule = MiniAppFileSystemModule(baseDirectory: tempDir)
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest, modules: [MiniAppModuleType(fsModule)])
+        runtime.start()
+
+        runtime.evaluateScript("miniapp.fs.root.getFileHandle('sized.txt', {create: true}).write('12345')")
+        let size = runtime.evaluateScriptAsDouble("miniapp.fs.root.getFileHandle('sized.txt').size")
+        XCTAssertEqual(size, 5.0)
+    }
+
+    func testJSPersistenceAcrossInstances() throws {
         let tempDir = try createTempDirectory()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let appJS = "App({})"
         let (pkg1, manifest1) = try createRuntimePackage(appJS: appJS)
-        let storage1 = MiniAppStorage(appId: manifest1.appId, mode: .persistent(baseDirectory: tempDir))
-        let runtime1 = MiniAppRuntime(package: pkg1, manifest: manifest1, storage: storage1)
+        let fsModule1 = MiniAppFileSystemModule(baseDirectory: tempDir)
+        let runtime1 = MiniAppRuntime(package: pkg1, manifest: manifest1, modules: [MiniAppModuleType(fsModule1)])
         runtime1.start()
 
-        // Write data in the first runtime instance
-        runtime1.evaluateScript("miniapp.setStorageSync('persistent', 'data')")
+        runtime1.evaluateScript("miniapp.fs.root.getFileHandle('persist.txt', {create: true}).write('survives')")
 
-        // Create a new runtime with the same persistent storage
+        // Create a new runtime with the same base directory
         let (pkg2, manifest2) = try createRuntimePackage(appJS: appJS)
-        let storage2 = MiniAppStorage(appId: manifest2.appId, mode: .persistent(baseDirectory: tempDir))
-        let runtime2 = MiniAppRuntime(package: pkg2, manifest: manifest2, storage: storage2)
+        let fsModule2 = MiniAppFileSystemModule(baseDirectory: tempDir)
+        let runtime2 = MiniAppRuntime(package: pkg2, manifest: manifest2, modules: [MiniAppModuleType(fsModule2)])
         runtime2.start()
 
-        // The data should persist
-        let result = runtime2.evaluateScript("miniapp.getStorageSync('persistent')")
-        XCTAssertEqual(result, "data")
+        let result = runtime2.evaluateScript("miniapp.fs.root.getFileHandle('persist.txt').read()")
+        XCTAssertEqual(result, "survives")
+    }
+
+    // MARK: - i18n Tests
+
+    func testI18nTranslateBasicKey() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        // Create a miniapp with i18n files
+        let pkgPath = tempDir.appendingPathComponent("i18n-test.ma").path
+        let manifest = MiniAppManifest(
+            appId: "com.example.i18n",
+            name: "I18n Test",
+            icons: [],
+            version: MiniAppVersion(code: 1, name: "1.0.0"),
+            platformVersion: MiniAppPlatformVersion(minCode: 1),
+            pages: ["pages/index/index"],
+            lang: "en"
+        )
+        let builder = try MiniAppPackageBuilder(path: pkgPath)
+        try builder.addManifest(manifest)
+        try builder.addEntry(path: "app.js", string: "App({})", compression: 0)
+        try builder.addEntry(path: "pages/index/index.html", string: "<html></html>", compression: 0)
+        try builder.addEntry(path: "pages/index/index.js", string: "Page({})", compression: 0)
+        try builder.addEntry(path: "i18n/en.json", string: "{\"greeting\":\"Hello\",\"farewell\":\"Goodbye\"}", compression: 0)
+        try builder.finalize()
+
+        let package = MiniAppPackage(path: pkgPath)
+        let i18nModule = MiniAppI18nModule()
+        let runtime = MiniAppRuntime(package: package, manifest: manifest, modules: [MiniAppModuleType(i18nModule)])
+        runtime.start()
+
+        let result = runtime.evaluateScript("miniapp.i18n.t('greeting')")
+        XCTAssertEqual(result, "Hello")
+
+        let result2 = runtime.evaluateScript("miniapp.i18n.t('farewell')")
+        XCTAssertEqual(result2, "Goodbye")
+    }
+
+    func testI18nMissingKeyReturnsKey() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let pkgPath = tempDir.appendingPathComponent("i18n-test.ma").path
+        let manifest = MiniAppManifest(
+            appId: "com.example.i18n",
+            name: "I18n Test",
+            icons: [],
+            version: MiniAppVersion(code: 1, name: "1.0.0"),
+            platformVersion: MiniAppPlatformVersion(minCode: 1),
+            pages: ["pages/index/index"],
+            lang: "en"
+        )
+        let builder = try MiniAppPackageBuilder(path: pkgPath)
+        try builder.addManifest(manifest)
+        try builder.addEntry(path: "app.js", string: "App({})", compression: 0)
+        try builder.addEntry(path: "pages/index/index.html", string: "<html></html>", compression: 0)
+        try builder.addEntry(path: "pages/index/index.js", string: "Page({})", compression: 0)
+        try builder.addEntry(path: "i18n/en.json", string: "{\"known\":\"Known\"}", compression: 0)
+        try builder.finalize()
+
+        let package = MiniAppPackage(path: pkgPath)
+        let i18nModule = MiniAppI18nModule()
+        let runtime = MiniAppRuntime(package: package, manifest: manifest, modules: [MiniAppModuleType(i18nModule)])
+        runtime.start()
+
+        // Missing key returns the key itself
+        let result = runtime.evaluateScript("miniapp.i18n.t('unknown.key')")
+        XCTAssertEqual(result, "unknown.key")
+    }
+
+    func testI18nParameterSubstitution() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let pkgPath = tempDir.appendingPathComponent("i18n-test.ma").path
+        let manifest = MiniAppManifest(
+            appId: "com.example.i18n",
+            name: "I18n Test",
+            icons: [],
+            version: MiniAppVersion(code: 1, name: "1.0.0"),
+            platformVersion: MiniAppPlatformVersion(minCode: 1),
+            pages: ["pages/index/index"],
+            lang: "en"
+        )
+        let builder = try MiniAppPackageBuilder(path: pkgPath)
+        try builder.addManifest(manifest)
+        try builder.addEntry(path: "app.js", string: "App({})", compression: 0)
+        try builder.addEntry(path: "pages/index/index.html", string: "<html></html>", compression: 0)
+        try builder.addEntry(path: "pages/index/index.js", string: "Page({})", compression: 0)
+        try builder.addEntry(path: "i18n/en.json", string: "{\"hello\":\"Hello, {name}!\",\"multi\":\"From {city} to {dest}\"}", compression: 0)
+        try builder.finalize()
+
+        let package = MiniAppPackage(path: pkgPath)
+        let i18nModule = MiniAppI18nModule()
+        let runtime = MiniAppRuntime(package: package, manifest: manifest, modules: [MiniAppModuleType(i18nModule)])
+        runtime.start()
+
+        let result = runtime.evaluateScript("miniapp.i18n.t('hello', {name: 'World'})")
+        XCTAssertEqual(result, "Hello, World!")
+
+        let result2 = runtime.evaluateScript("miniapp.i18n.t('multi', {city: 'NYC', dest: 'LA'})")
+        XCTAssertEqual(result2, "From NYC to LA")
+    }
+
+    func testI18nPluralRules() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let pkgPath = tempDir.appendingPathComponent("i18n-test.ma").path
+        let manifest = MiniAppManifest(
+            appId: "com.example.i18n",
+            name: "I18n Test",
+            icons: [],
+            version: MiniAppVersion(code: 1, name: "1.0.0"),
+            platformVersion: MiniAppPlatformVersion(minCode: 1),
+            pages: ["pages/index/index"],
+            lang: "en"
+        )
+        let builder = try MiniAppPackageBuilder(path: pkgPath)
+        try builder.addManifest(manifest)
+        try builder.addEntry(path: "app.js", string: "App({})", compression: 0)
+        try builder.addEntry(path: "pages/index/index.html", string: "<html></html>", compression: 0)
+        try builder.addEntry(path: "pages/index/index.js", string: "Page({})", compression: 0)
+        try builder.addEntry(path: "i18n/en.json", string: "{}", compression: 0)
+        try builder.finalize()
+
+        let package = MiniAppPackage(path: pkgPath)
+        let i18nModule = MiniAppI18nModule()
+        let runtime = MiniAppRuntime(package: package, manifest: manifest, modules: [MiniAppModuleType(i18nModule)])
+        runtime.start()
+
+        // Plural: 1 item, 5 items
+        let one = runtime.evaluateScript("miniapp.i18n.plural(1, {one: '# item', other: '# items'})")
+        XCTAssertEqual(one, "1 item")
+
+        let many = runtime.evaluateScript("miniapp.i18n.plural(5, {one: '# item', other: '# items'})")
+        XCTAssertEqual(many, "5 items")
+    }
+
+    func testI18nNumberFormat() throws {
+        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
+        let i18nModule = MiniAppI18nModule()
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest, modules: [MiniAppModuleType(i18nModule)])
+        runtime.start()
+
+        // Basic number formatting — should at least produce a string representation
+        let result = runtime.evaluateScript("miniapp.i18n.n(1234.56)")
+        XCTAssertNotNil(result)
+        XCTAssertTrue(result?.contains("1") == true) // At minimum contains digits
+        XCTAssertTrue(result?.contains("234") == true)
+    }
+
+    func testI18nLocaleProperty() throws {
+        let tempDir = try createTempDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let pkgPath = tempDir.appendingPathComponent("i18n-test.ma").path
+        let manifest = MiniAppManifest(
+            appId: "com.example.i18n",
+            name: "I18n Test",
+            icons: [],
+            version: MiniAppVersion(code: 1, name: "1.0.0"),
+            platformVersion: MiniAppPlatformVersion(minCode: 1),
+            pages: ["pages/index/index"],
+            lang: "en"
+        )
+        let builder = try MiniAppPackageBuilder(path: pkgPath)
+        try builder.addManifest(manifest)
+        try builder.addEntry(path: "app.js", string: "App({})", compression: 0)
+        try builder.addEntry(path: "pages/index/index.html", string: "<html></html>", compression: 0)
+        try builder.addEntry(path: "pages/index/index.js", string: "Page({})", compression: 0)
+        try builder.addEntry(path: "i18n/en.json", string: "{}", compression: 0)
+        try builder.finalize()
+
+        let package = MiniAppPackage(path: pkgPath)
+        let i18nModule = MiniAppI18nModule()
+        let runtime = MiniAppRuntime(package: package, manifest: manifest, modules: [MiniAppModuleType(i18nModule)])
+        runtime.start()
+
+        let locale = runtime.evaluateScript("miniapp.i18n.locale")
+        XCTAssertNotNil(locale)
+        // Should be "en" since we provided i18n/en.json and manifest.lang = "en"
+        XCTAssertEqual(locale, "en")
+    }
+
+    func testManifestI18nParsing() throws {
+        let json = """
+        {
+            "app_id": "com.example.i18n",
+            "name": "Hello App",
+            "icons": [{"src": "icon.png"}],
+            "version": {"code": 1, "name": "1.0.0"},
+            "platform_version": {"min_code": 1},
+            "pages": ["pages/index/index"],
+            "lang": "en",
+            "i18n": {
+                "zh-CN": {
+                    "name": "你好应用",
+                    "short_name": "你好",
+                    "description": "一个国际化应用"
+                }
+            }
+        }
+        """
+        let data = try XCTUnwrap(json.data(using: .utf8))
+        let manifest = try JSONDecoder().decode(MiniAppManifest.self, from: data)
+
+        XCTAssertEqual(manifest.name, "Hello App")
+        XCTAssertEqual(manifest.lang, "en")
+        XCTAssertNotNil(manifest.i18n)
+        XCTAssertEqual(manifest.i18n?["zh-CN"]?.name, "你好应用")
+        XCTAssertEqual(manifest.i18n?["zh-CN"]?.shortName, "你好")
+        XCTAssertEqual(manifest.i18n?["zh-CN"]?.description, "一个国际化应用")
     }
 
     func testRuntimeNavigationCommand() throws {
@@ -1540,7 +1764,7 @@ final class SkipMiniAppModelTests: XCTestCase {
         XCTAssertEqual(en?["home.welcome"], "Welcome")
         XCTAssertEqual(en?["settings.language"], "Language")
 
-        let zhURL = root.appendingPathComponent("i18n/zh-Hans.json")
+        let zhURL = root.appendingPathComponent("i18n/zh-CN.json")
         let zhData = try Data(contentsOf: zhURL)
         let zh = try JSONSerialization.jsonObject(with: zhData) as? [String: String]
         XCTAssertNotNil(zh?["app.title"])
