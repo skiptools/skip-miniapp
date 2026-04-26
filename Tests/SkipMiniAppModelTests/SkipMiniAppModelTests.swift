@@ -1389,7 +1389,7 @@ final class SkipMiniAppModelTests: XCTestCase {
             "pages": ["pages/index/index"],
             "lang": "en",
             "i18n": {
-                "zh-Hans": {
+                "zh-CN": {
                     "name": "你好应用",
                     "short_name": "你好",
                     "description": "一个国际化应用"
@@ -1403,9 +1403,9 @@ final class SkipMiniAppModelTests: XCTestCase {
         XCTAssertEqual(manifest.name, "Hello App")
         XCTAssertEqual(manifest.lang, "en")
         XCTAssertNotNil(manifest.i18n)
-        XCTAssertEqual(manifest.i18n?["zh-Hans"]?.name, "你好应用")
-        XCTAssertEqual(manifest.i18n?["zh-Hans"]?.shortName, "你好")
-        XCTAssertEqual(manifest.i18n?["zh-Hans"]?.description, "一个国际化应用")
+        XCTAssertEqual(manifest.i18n?["zh-CN"]?.name, "你好应用")
+        XCTAssertEqual(manifest.i18n?["zh-CN"]?.shortName, "你好")
+        XCTAssertEqual(manifest.i18n?["zh-CN"]?.description, "一个国际化应用")
     }
 
     func testRuntimeNavigationCommand() throws {
@@ -1764,7 +1764,7 @@ final class SkipMiniAppModelTests: XCTestCase {
         XCTAssertEqual(en?["home.welcome"], "Welcome")
         XCTAssertEqual(en?["settings.language"], "Language")
 
-        let zhURL = root.appendingPathComponent("i18n/zh-Hans.json")
+        let zhURL = root.appendingPathComponent("i18n/zh-CN.json")
         let zhData = try Data(contentsOf: zhURL)
         let zh = try JSONSerialization.jsonObject(with: zhData) as? [String: String]
         XCTAssertNotNil(zh?["app.title"])

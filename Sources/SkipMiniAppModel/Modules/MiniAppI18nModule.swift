@@ -48,14 +48,14 @@ public final class MiniAppI18nModule: MiniAppModule {
         let allTranslations = mergedTranslations()
         if let jsonData = try? JSONSerialization.data(withJSONObject: allTranslations),
            let jsonStr = String(data: jsonData, encoding: .utf8) {
-            context.evaluateScript("var __i18nMessages = JSON.parse('\(Self.escapeJS(jsonStr))')")
+            _ = context.evaluateScript("var __i18nMessages = JSON.parse('\(Self.escapeJS(jsonStr))')")
         } else {
-            context.evaluateScript("var __i18nMessages = {}")
+            _ = context.evaluateScript("var __i18nMessages = {}")
         }
-        context.evaluateScript("var __i18nLocale = '\(Self.escapeJS(activeLocale))'")
+        _ = context.evaluateScript("var __i18nLocale = '\(Self.escapeJS(activeLocale))'")
 
         // skip.i18n.t(key, params?) — translate with parameter substitution
-        context.evaluateScript("""
+        _ = context.evaluateScript("""
         function __i18nTranslate(key, params) {
             var msg = __i18nMessages[key] || key;
             if (params) {
@@ -139,11 +139,24 @@ public final class MiniAppI18nModule: MiniAppModule {
         let manifestLang = runtime.manifest.lang ?? "en"
         let deviceLocale = Locale.current.identifier.replacingOccurrences(of: "_", with: "-")
 
-        // Try loading locale files via the file system or package
-        let localesToTry = [deviceLocale, manifestLang, "en"]
-        var loaded = false
+        // Build the locale resolution chain for the device locale.
+        // Example: "fr-CA" → try "fr-CA.json", "fr-FR.json", "fr.json"
+        // Example: "zh-CN" → try "zh-CN.json", "zh.json"
+        var candidates = localeFallbackChain(deviceLocale)
 
-        for locale in localesToTry {
+        // Then try the manifest default locale's chain
+        if !candidates.contains(manifestLang) {
+            candidates.append(contentsOf: localeFallbackChain(manifestLang))
+        }
+
+        // Ultimate fallback: "en"
+        if !candidates.contains("en") {
+            candidates.append("en")
+        }
+
+        // Try each candidate
+        var loaded = false
+        for locale in candidates {
             if let data = try? runtime.package.readEntry(at: "i18n/\(locale).json"),
                let dict = parseTranslations(data: data) {
                 translations = dict
@@ -151,38 +164,71 @@ public final class MiniAppI18nModule: MiniAppModule {
                 loaded = true
                 break
             }
-            // Also try without region (e.g., "zh" from "zh-Hans")
-            let shortLocale = String(locale.split(separator: "-").first ?? "")
-            if shortLocale != locale {
-                if let data = try? runtime.package.readEntry(at: "i18n/\(shortLocale).json"),
-                   let dict = parseTranslations(data: data) {
-                    translations = dict
-                    activeLocale = shortLocale
-                    loaded = true
-                    break
-                }
-            }
         }
 
         if !loaded {
             activeLocale = manifestLang
         }
 
-        // Load fallback (manifest lang) if different from active
+        // Load fallback translations (manifest default) if different from active
         if activeLocale != manifestLang {
-            if let data = try? runtime.package.readEntry(at: "i18n/\(manifestLang).json"),
-               let dict = parseTranslations(data: data) {
-                fallbackTranslations = dict
+            for locale in localeFallbackChain(manifestLang) {
+                if let data = try? runtime.package.readEntry(at: "i18n/\(locale).json"),
+                   let dict = parseTranslations(data: data) {
+                    fallbackTranslations = dict
+                    break
+                }
             }
         }
 
-        // Load "en" as ultimate fallback if not already loaded
+        // Load "en" as ultimate fallback if still no fallback
         if activeLocale != "en" && fallbackTranslations.isEmpty {
             if let data = try? runtime.package.readEntry(at: "i18n/en.json"),
                let dict = parseTranslations(data: data) {
                 fallbackTranslations = dict
             }
         }
+    }
+
+    /// Generate the locale fallback chain for a given locale tag.
+    ///
+    /// Examples:
+    /// - "fr-CA" → ["fr-CA", "fr-FR", "fr"]
+    /// - "zh-CN" → ["zh-CN", "zh"]
+    /// - "en" → ["en"]
+    /// - "pt-BR" → ["pt-BR", "pt-PT", "pt"]
+    ///
+    /// The logic: try the exact tag, then try the common "default" region for that language
+    /// (if applicable), then try just the language code.
+    private func localeFallbackChain(_ locale: String) -> [String] {
+        var chain: [String] = [locale]
+        let parts = locale.split(separator: "-").map { String($0) }
+
+        if parts.count >= 2 {
+            let lang = parts[0]
+            let region = parts[1]
+
+            // Try common default regions for major languages
+            let defaultRegions: [String: String] = [
+                "fr": "FR", "es": "ES", "pt": "PT", "de": "DE",
+                "it": "IT", "nl": "NL", "ru": "RU", "ar": "SA",
+                "zh": "CN", "ja": "JP", "ko": "KR", "en": "US"
+            ]
+
+            if let defaultRegion = defaultRegions[lang], defaultRegion != region {
+                let defaultTag = "\(lang)-\(defaultRegion)"
+                if !chain.contains(defaultTag) {
+                    chain.append(defaultTag)
+                }
+            }
+
+            // Try just the language code
+            if !chain.contains(lang) {
+                chain.append(lang)
+            }
+        }
+
+        return chain
     }
 
     private func parseTranslations(data: Data) -> [String: String]? {
