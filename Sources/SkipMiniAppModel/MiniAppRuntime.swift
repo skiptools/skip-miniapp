@@ -80,7 +80,7 @@ public enum MiniAppNavigationAction: String, Equatable {
     public var pendingNavigation: MiniAppNavigationCommand?
 
     /// Pending data update from setData(), observed by the view layer.
-    /// Contains the JSON string of the patch to apply to the view's data.
+    /// Contains the JSON string of the full page data snapshot to push to the view.
     public var pendingDataUpdate: String?
 
     /// Current page stack (array of page paths).
@@ -161,6 +161,48 @@ public enum MiniAppNavigationAction: String, Equatable {
         logEntries.append(entry)
     }
 
+    /// Update a single key in the current page's data without triggering a view push.
+    /// Used for x-model two-way binding where the view already has the updated value.
+    public func updatePageData(key: String, value: String) {
+        guard let pagePath = currentPage,
+              let callbacks = pageCallbacks[pagePath],
+              let pageInstance = callbacks.pageInstance else { return }
+        let safeKey = key.replacingOccurrences(of: "'", with: "\\'")
+        let safeValue = value.replacingOccurrences(of: "'", with: "\\'").replacingOccurrences(of: "\n", with: "\\n")
+        context.setObject(pageInstance, forKeyedSubscript: "__currentPage")
+        context.evaluateScript("__currentPage.data['\(safeKey)'] = '\(safeValue)'")
+    }
+
+    /// Get the custom event handler names for the current page.
+    /// These are methods on the Page config that aren't lifecycle callbacks or data/setData.
+    public func pageHandlerNames() -> [String] {
+        guard let pagePath = currentPage,
+              let callbacks = pageCallbacks[pagePath],
+              let pageInstance = callbacks.pageInstance else { return [] }
+
+        // Enumerate keys on the page instance and filter to custom handler functions
+        let skipList = "['data','setData','onLoad','onShow','onReady','onHide','onUnload']"
+        context.setObject(pageInstance, forKeyedSubscript: "__tmpPage")
+        guard let result = context.evaluateScript("""
+        (function() {
+            var keys = Object.keys(__tmpPage);
+            var skipSet = \(skipList);
+            var handlers = [];
+            for (var i = 0; i < keys.length; i++) {
+                if (skipSet.indexOf(keys[i]) === -1 && typeof __tmpPage[keys[i]] === 'function') {
+                    handlers.push(keys[i]);
+                }
+            }
+            return JSON.stringify(handlers);
+        })()
+        """) else { return [] }
+
+        let jsonString = result.toString() ?? "[]"
+        guard let jsonData = jsonString.data(using: .utf8),
+              let names = try? JSONSerialization.jsonObject(with: jsonData) as? [String] else { return [] }
+        return names
+    }
+
     /// Get the initial data JSON for the current page (for the view layer's first render).
     public func initialDataJSON() -> String {
         guard let pagePath = currentPage,
@@ -173,33 +215,45 @@ public enum MiniAppNavigationAction: String, Equatable {
         return "{}"
     }
 
-    /// Dispatch a view-layer event to the logic layer's page handler.
+    /// Call a function on the current page instance with the correct `this` binding.
+    ///
+    /// JSValue's `call(withArguments:)` loses the `this` context, so lifecycle callbacks
+    /// and event handlers would fail when accessing `this.data` or `this.setData()`.
+    /// This helper invokes the function via JavaScript's `fn.call(page, ...)`.
     ///
     /// - Parameters:
-    ///   - handlerName: The name of the handler method on the Page instance (e.g., "onTap").
-    ///   - eventJSON: JSON string of the event detail object.
+    ///   - callback: The JSValue function to call.
+    ///   - pagePath: The page whose instance provides the `this` context.
+    ///   - argsJSON: Optional JSON string of the argument to pass (parsed in JS).
+    private func callOnPageInstance(_ callback: JSValue, pagePath: String, argsJSON: String? = nil) {
+        guard let callbacks = pageCallbacks[pagePath],
+              let pageInstance = callbacks.pageInstance else { return }
+
+        context.setObject(pageInstance, forKeyedSubscript: "__currentPage")
+        context.setObject(callback, forKeyedSubscript: "__currentCallback")
+
+        if let argsJSON = argsJSON {
+            let safe = argsJSON.replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "'", with: "\\'")
+                .replacingOccurrences(of: "\n", with: "\\n")
+            context.evaluateScript("__currentCallback.call(__currentPage, JSON.parse('\(safe)'))")
+        } else {
+            context.evaluateScript("__currentCallback.call(__currentPage)")
+        }
+    }
+
+    /// Dispatch a view-layer event to the logic layer's page handler.
     public func dispatchEvent(handlerName: String, eventJSON: String) {
         guard let pagePath = currentPage,
               let callbacks = pageCallbacks[pagePath],
               let pageInstance = callbacks.pageInstance else { return }
 
-        // Use a JS helper to call the handler with the correct `this` context (the page instance).
-        // handler.call(withArguments:) loses `this`, so we must invoke via the page object.
         let safeHandler = handlerName.replacingOccurrences(of: "'", with: "\\'")
-        let safeJSON = eventJSON.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'").replacingOccurrences(of: "\n", with: "\\n")
-
-        // Store the page instance temporarily for access from JS
         context.setObject(pageInstance, forKeyedSubscript: "__currentPage")
-        _ = context.evaluateScript("""
-        (function() {
-            var page = __currentPage;
-            var handler = page['\(safeHandler)'];
-            if (typeof handler === 'function') {
-                var event = JSON.parse('\(safeJSON)');
-                handler.call(page, event);
-            }
-        })();
-        """)
+        let handler = context.evaluateScript("__currentPage['\(safeHandler)']")
+        if let handler = handler, handler.isFunction {
+            callOnPageInstance(handler, pagePath: pagePath, argsJSON: eventJSON)
+        }
     }
 
     // MARK: - Module Helpers
@@ -309,9 +363,13 @@ public enum MiniAppNavigationAction: String, Equatable {
                 })
                 """)?.call(withArguments: [callbacks.data ?? JSValue(newObjectIn: ctx2), patch])
 
-                // Serialize the patch and push to the view layer
+                // Serialize the full page data (not just the patch) so that multiple
+                // setData() calls within one handler all contribute to the final state.
+                // The last setData() wins, but since all patches merge into this.data first,
+                // the full serialization contains everything.
                 if let stringify = ctx2.evaluateScript("JSON.stringify"),
-                   let result = try? stringify.call(withArguments: [patch]),
+                   let fullData = callbacks.data,
+                   let result = try? stringify.call(withArguments: [fullData]),
                    let jsonStr = result.toString() as String? {
                     runtime.pendingDataUpdate = jsonStr
                 }
@@ -417,8 +475,10 @@ public enum MiniAppNavigationAction: String, Equatable {
 
         let clearTimeoutFn = JSValue(newFunctionIn: context) { ctx, obj, args in
             if let idVal = args.first {
-                let timerId = Int(idVal.toDouble())
-                runtime.activeTimers.remove(timerId)
+                let d = idVal.toDouble()
+                if !d.isNaN && !d.isInfinite {
+                    runtime.activeTimers.remove(Int(d))
+                }
             }
             return JSValue(undefinedIn: ctx)
         }
@@ -443,9 +503,12 @@ public enum MiniAppNavigationAction: String, Equatable {
 
         let clearIntervalFn = JSValue(newFunctionIn: context) { ctx, obj, args in
             if let idVal = args.first {
-                let timerId = Int(idVal.toDouble())
-                runtime.activeTimers.remove(timerId)
-                runtime.intervalCallbacks.removeValue(forKey: timerId)
+                let d = idVal.toDouble()
+                if !d.isNaN && !d.isInfinite {
+                    let timerId = Int(d)
+                    runtime.activeTimers.remove(timerId)
+                    runtime.intervalCallbacks.removeValue(forKey: timerId)
+                }
             }
             return JSValue(undefinedIn: ctx)
         }
@@ -574,12 +637,11 @@ public enum MiniAppNavigationAction: String, Equatable {
             }
         }
 
-        // Fire onLoad
+        // Fire onLoad with the page instance as `this`
         pageLifecycle.load()
         if let callbacks = pageCallbacks[pagePath], let onLoad = callbacks.onLoad {
-            let options = JSValue(newObjectIn: context)
-            options.setObject(JSValue(string: query, in: context), forKeyedSubscript: "query")
-            let _ = try? onLoad.call(withArguments: [options])
+            let argsJSON = "{\"query\":\"\(query.replacingOccurrences(of: "\"", with: "\\\""))\"}"
+            callOnPageInstance(onLoad, pagePath: pagePath, argsJSON: argsJSON)
         }
     }
 
@@ -587,7 +649,7 @@ public enum MiniAppNavigationAction: String, Equatable {
     public func firePageReady(pagePath: String) {
         pageLifecycles[pagePath]?.ready()
         if let callbacks = pageCallbacks[pagePath], let onReady = callbacks.onReady {
-            let _ = try? onReady.call(withArguments: [])
+            callOnPageInstance(onReady, pagePath: pagePath)
         }
     }
 
@@ -595,7 +657,7 @@ public enum MiniAppNavigationAction: String, Equatable {
     public func firePageShow(pagePath: String) {
         pageLifecycles[pagePath]?.show()
         if let callbacks = pageCallbacks[pagePath], let onShow = callbacks.onShow {
-            let _ = try? onShow.call(withArguments: [])
+            callOnPageInstance(onShow, pagePath: pagePath)
         }
     }
 
@@ -603,7 +665,7 @@ public enum MiniAppNavigationAction: String, Equatable {
     public func firePageHide(pagePath: String) {
         pageLifecycles[pagePath]?.hide()
         if let callbacks = pageCallbacks[pagePath], let onHide = callbacks.onHide {
-            let _ = try? onHide.call(withArguments: [])
+            callOnPageInstance(onHide, pagePath: pagePath)
         }
     }
 
@@ -611,7 +673,7 @@ public enum MiniAppNavigationAction: String, Equatable {
     public func firePageUnload(pagePath: String) {
         pageLifecycles[pagePath]?.unload()
         if let callbacks = pageCallbacks[pagePath], let onUnload = callbacks.onUnload {
-            let _ = try? onUnload.call(withArguments: [])
+            callOnPageInstance(onUnload, pagePath: pagePath)
         }
         pageCallbacks.removeValue(forKey: pagePath)
         pageLifecycles.removeValue(forKey: pagePath)

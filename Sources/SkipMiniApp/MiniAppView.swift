@@ -134,139 +134,133 @@ public struct MiniAppHostView: View {
         return config
     }
 
+    /// Alpine.js CSP build source, loaded from the framework bundle.
+    private var alpineSource: String {
+        guard let url = Bundle.module.url(forResource: "alpine-csp.min", withExtension: "js"),
+              let source = try? String(contentsOf: url, encoding: .utf8) else {
+            return "/* Alpine.js CSP build not found */"
+        }
+        return source
+    }
+
     /// JavaScript injected into each WebView page for the View Layer.
     ///
-    /// The View Layer has NO access to host APIs (storage, fetch, log). It can only:
-    /// 1. Receive data updates via `window.__miniappSetData(patch)`
-    /// 2. Send user events (taps, input) back to the Logic Layer via the bridge
+    /// Uses Alpine.js (CSP build) for reactive rendering. The View Layer has NO
+    /// access to host APIs (storage, fetch, log). It can only:
+    /// 1. Display data via Alpine directives (`x-text`, `x-show`, `x-for`, etc.)
+    /// 2. Send user events back to the Logic Layer via `handler('name')` calls
+    /// 3. Two-way bind inputs via `x-model` + `model('key')` sync
     ///
-    /// HTML elements use `data-bind="key"` for data display and
-    /// `data-event-tap="handlerName"` / `data-event-input="handlerName"` for events.
+    /// HTML templates use `x-data="page"` and reference `store.*` for data.
     private var bridgeUserScript: WebViewUserScript {
-        // Get initial page data from the runtime
         let initialData = runtime?.initialDataJSON() ?? "{}"
+        let handlerNames = runtime?.pageHandlerNames() ?? []
 
-        let script = """
-        (function() {
-            // --- View Layer data store (on window so native evaluateJavaScript can access it) ---
-            window._miniappData = \(initialData);
-            var _data = window._miniappData;
+        // Generate handler function properties for the Alpine component.
+        // This allows @click="onSaveNote" instead of @click="handler('onSaveNote')"
+        // because the CSP parser needs the property to exist on the component scope.
+        var handlerProps = ""
+        for name in handlerNames {
+            let safeName = name.replacingOccurrences(of: "'", with: "\\'")
+            handlerProps += "                    \(name): function(detail) { window.$handler('\(safeName)', detail); },\n"
+        }
 
-            // Receive data patches from the Logic Layer (called by native bridge)
-            window.__miniappSetData = function(patch) {
-                var d = window._miniappData;
-                if (!d) { window._miniappData = {}; d = window._miniappData; }
-                // Path-based merge
-                var keys = Object.keys(patch);
-                for (var i = 0; i < keys.length; i++) {
-                    var key = keys[i];
-                    var val = patch[key];
-                    if (key.indexOf('.') === -1 && key.indexOf('[') === -1) {
-                        d[key] = val;
-                    } else {
-                        var parts = key.replace(/\\[/g, '.').replace(/\\]/g, '').split('.');
-                        var obj = d;
-                        for (var j = 0; j < parts.length - 1; j++) {
-                            if (obj[parts[j]] === undefined) obj[parts[j]] = {};
-                            obj = obj[parts[j]];
-                        }
-                        obj[parts[parts.length - 1]] = val;
-                    }
-                }
-                _data = d;
-                __renderData();
-            };
-
-            // Render data into bound DOM elements
-            function __renderData() {
-                var d = window._miniappData || {};
-                document.querySelectorAll('[data-bind]').forEach(function(el) {
-                    var key = el.getAttribute('data-bind');
-                    var val = __resolveKey(d, key);
-                    if (val === undefined || val === null) val = '';
-                    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
-                        el.value = val;
-                    } else if (typeof val === 'boolean') {
-                        // For boolean bindings, toggle visibility or class
-                        if (el.hasAttribute('data-bind-class')) {
-                            var cls = el.getAttribute('data-bind-class');
-                            if (val) el.classList.add(cls);
-                            else el.classList.remove(cls);
-                        } else {
-                            el.textContent = String(val);
-                        }
-                    } else {
-                        el.textContent = String(val);
-                    }
+        let bridgeScript = """
+        // --- Bridge: event dispatch to Logic Layer ---
+        window.$handler = function(name, detail) {
+            try {
+                webkit.messageHandlers.miniappBridge.postMessage({
+                    action: '__event',
+                    data: { type: 'tap', handler: name, detail: detail || {} }
                 });
-            }
+            } catch(e) {}
+        };
 
-            // Resolve a potentially dotted/bracketed key path
-            function __resolveKey(obj, key) {
-                if (key.indexOf('.') === -1 && key.indexOf('[') === -1) return obj[key];
-                var parts = key.replace(/\\[/g, '.').replace(/\\]/g, '').split('.');
-                var current = obj;
-                for (var i = 0; i < parts.length; i++) {
-                    if (current === undefined || current === null) return undefined;
-                    current = current[parts[i]];
-                }
-                return current;
-            }
+        // --- Bridge: two-way model sync to Logic Layer ---
+        window.$model = function(key, value) {
+            try {
+                webkit.messageHandlers.miniappBridge.postMessage({
+                    action: '__model',
+                    data: { key: key, value: String(value) }
+                });
+            } catch(e) {}
+        };
 
-            // --- Event system: View → Logic Layer ---
-            function sendEvent(type, handler, detail) {
-                try {
-                    webkit.messageHandlers.miniappBridge.postMessage({
-                        action: '__event',
-                        data: { type: type, handler: handler, detail: detail || {} }
-                    });
-                } catch(e) {}
-            }
+        // --- Alpine initialization ---
+        document.addEventListener('alpine:init', function() {
+            // Register the reactive page data store
+            Alpine.store('page', \(initialData));
 
-            // Tap events via data-event-tap="handlerName"
-            document.addEventListener('click', function(e) {
-                var el = e.target.closest('[data-event-tap]');
-                if (el) {
-                    var handler = el.getAttribute('data-event-tap');
-                    var dataset = {};
-                    for (var attr in el.dataset) {
-                        if (attr !== 'eventTap' && attr !== 'bind' && attr !== 'bindClass') {
-                            dataset[attr] = el.dataset[attr];
-                        }
+            // Register the page component used via x-data="page"
+            Alpine.data('page', function() {
+                return {
+                    get store() { return Alpine.store('page'); },
+                    // Dispatch an event to the Logic Layer by handler name
+                    handler: function(name, detail) { window.$handler(name, detail); },
+                    // Sync an x-model key to the Logic Layer
+                    model: function(key) { window.$model(key, Alpine.store('page')[key]); },
+                    // Pre-registered page handlers (generated from Page config keys).
+                    // Allows @click="onSaveNote" instead of @click="handler('onSaveNote')".
+        \(handlerProps)
+                    init: function() {
+                        // Auto-sync x-model inputs to the Logic Layer.
+                        // Discovers all [x-model="store.KEY"] elements and adds native input
+                        // listeners so the view-side change propagates without manual @input.
+                        this.$nextTick(function() {
+                            var els = document.querySelectorAll('[x-model]');
+                            for (var i = 0; i < els.length; i++) {
+                                (function(el) {
+                                    var attr = el.getAttribute('x-model');
+                                    if (attr && attr.indexOf('store.') === 0) {
+                                        var key = attr.substring(6);
+                                        el.addEventListener('input', function() {
+                                            window.$model(key, el.value);
+                                        });
+                                    }
+                                })(els[i]);
+                            }
+                        });
                     }
-                    sendEvent('tap', handler, { dataset: dataset });
-                }
+                };
             });
+        });
 
-            // Input events via data-event-input="handlerName"
-            document.addEventListener('input', function(e) {
-                var el = e.target.closest('[data-event-input]');
-                if (el) {
-                    var handler = el.getAttribute('data-event-input');
-                    sendEvent('input', handler, { value: el.value });
+        // --- setData bridge: Logic Layer → View Layer ---
+        // Called from native via evaluateJavaScript when the Logic Layer calls setData().
+        // Mutates Alpine's reactive store, which automatically triggers DOM updates.
+        window.__miniappSetData = function(patch) {
+            if (typeof Alpine === 'undefined') return;
+            var store = Alpine.store('page');
+            if (!store) return;
+            var keys = Object.keys(patch);
+            for (var i = 0; i < keys.length; i++) {
+                var key = keys[i];
+                var val = patch[key];
+                if (key.indexOf('.') === -1 && key.indexOf('[') === -1) {
+                    store[key] = val;
+                } else {
+                    var parts = key.replace(/\\[/g, '.').replace(/\\]/g, '').split('.');
+                    var obj = store;
+                    for (var j = 0; j < parts.length - 1; j++) {
+                        if (obj[parts[j]] === undefined) obj[parts[j]] = {};
+                        obj = obj[parts[j]];
+                    }
+                    obj[parts[parts.length - 1]] = val;
                 }
-            });
-
-            // Change events via data-event-change="handlerName"
-            document.addEventListener('change', function(e) {
-                var el = e.target.closest('[data-event-change]');
-                if (el) {
-                    var handler = el.getAttribute('data-event-change');
-                    sendEvent('change', handler, { value: el.value, checked: el.checked });
-                }
-            });
-
-            // Initial render with the data provided at page load
-            document.addEventListener('DOMContentLoaded', function() {
-                __renderData();
-            });
-            // Also render immediately in case DOM is already loaded
-            if (document.readyState !== 'loading') {
-                __renderData();
             }
-        })();
+        };
+
+        // --- Start Alpine after DOM is ready ---
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function() { Alpine.start(); });
+        } else {
+            Alpine.start();
+        }
         """
-        return WebViewUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+
+        // Assemble: Alpine source first, then bridge/store setup
+        let fullScript = alpineSource + "\n" + bridgeScript
+        return WebViewUserScript(source: fullScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
     }
 
     private func loadMiniApp() {
@@ -396,7 +390,6 @@ public struct MiniAppHostView: View {
         switch action {
         case "__event":
             // Dispatch user event from View Layer to Logic Layer.
-            // Build a full event object with type, detail, and dataset (matching WeChat's event model).
             if let handlerName = data["handler"] as? String {
                 let eventType = data["type"] as? String ?? "tap"
                 let detail = data["detail"] as? [String: Any] ?? [:]
@@ -408,6 +401,12 @@ public struct MiniAppHostView: View {
                    let eventJSON = String(data: eventData, encoding: .utf8) {
                     runtime.dispatchEvent(handlerName: handlerName, eventJSON: eventJSON)
                 }
+            }
+        case "__model":
+            // Two-way binding: Alpine x-model updated in view, sync to logic layer's data
+            if let key = data["key"] as? String {
+                let value = data["value"] as? String ?? ""
+                runtime.updatePageData(key: key, value: value)
             }
         default:
             break
