@@ -39,6 +39,8 @@ public struct MiniAppManifest: Codable, Hashable {
     public var reqPermissions: [MiniAppPermission]?
     /// Per-locale metadata localizations (W3C i18n key).
     public var i18n: [String: MiniAppManifestLocalization]?
+    /// Tab bar configuration for multi-tab MiniApps.
+    public var tabBar: MiniAppTabBar?
 
     enum CodingKeys: String, CodingKey {
         case appId = "app_id"
@@ -57,6 +59,7 @@ public struct MiniAppManifest: Codable, Hashable {
         case widgets
         case reqPermissions = "req_permissions"
         case i18n
+        case tabBar = "tab_bar"
     }
 
     public init(
@@ -255,6 +258,32 @@ public struct MiniAppManifestLocalization: Codable, Hashable {
         self.name = name
         self.shortName = shortName
         self.description = description
+    }
+}
+
+/// Tab bar configuration for multi-tab MiniApps.
+public struct MiniAppTabBar: Codable, Hashable {
+    /// Array of tab definitions (2-5 tabs).
+    public var tabs: [MiniAppTab]
+
+    public init(tabs: [MiniAppTab] = []) {
+        self.tabs = tabs
+    }
+}
+
+/// A single tab definition within the tab bar.
+public struct MiniAppTab: Codable, Hashable {
+    /// Page path matching an entry in the manifest's `pages` array.
+    public var page: String
+    /// Display label for the tab.
+    public var text: String
+    /// Path to an SVG icon file within the MiniApp package.
+    public var icon: String?
+
+    public init(page: String, text: String, icon: String? = nil) {
+        self.page = page
+        self.text = text
+        self.icon = icon
     }
 }
 #endif
