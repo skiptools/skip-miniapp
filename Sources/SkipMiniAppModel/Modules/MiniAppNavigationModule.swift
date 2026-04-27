@@ -58,6 +58,9 @@ extension MiniAppModuleType {
     /// Currently active tab index.
     public var activeTabIndex: Int = 0
 
+    /// Per-page navigation bar titles set by JS via `skip.setNavigationBarTitle()`.
+    public var pageTitles: [String: String] = [:]
+
     public override init() {
         super.init()
     }
@@ -155,6 +158,18 @@ extension MiniAppModuleType {
             return JSValue(undefinedIn: ctx)
         }
         namespace.setObject(switchTabFn, forKeyedSubscript: "switchTab")
+
+        // skip.setNavigationBarTitle({ title })
+        let setTitleFn = JSValue(newFunctionIn: context) { ctx, obj, args in
+            guard let options = args.first, options.isObject else { return JSValue(undefinedIn: ctx) }
+            let titleVal = options.objectForKeyedSubscript("title")
+            let title = titleVal.isUndefined ? "" : (titleVal.toString() ?? "")
+            if let currentPage = navModule.currentPage {
+                navModule.pageTitles[currentPage] = title
+            }
+            return JSValue(undefinedIn: ctx)
+        }
+        namespace.setObject(setTitleFn, forKeyedSubscript: "setNavigationBarTitle")
 
         // Store reference on runtime
         runtime.navigationModule = self

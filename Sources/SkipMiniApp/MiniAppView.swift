@@ -70,9 +70,6 @@ public struct MiniAppHostView: View {
                 }
                 .padding()
             } else if let manifest = manifest, let runtime = runtime, let extractDir = extractDir {
-                // Header bar
-                headerBar(manifest: manifest)
-
                 // Content: TabView or single NavigationStack
                 if let tabBar = manifest.tabBar, tabBar.tabs.count >= 2 {
                     tabbedContent(tabBar: tabBar, manifest: manifest, runtime: runtime, servingDir: extractDir)
@@ -94,40 +91,6 @@ public struct MiniAppHostView: View {
         }
     }
 
-    // MARK: - Header Bar
-
-    @ViewBuilder
-    private func headerBar(manifest: MiniAppManifest) -> some View {
-        if manifest.window?.navigationStyle != "custom" {
-            HStack {
-                if onDismiss != nil {
-                    Button(action: { onDismiss?() }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                            .font(.title2)
-                    }
-                    .padding(.leading, 12)
-                }
-
-                Spacer()
-
-                Text(manifest.window?.navigationBarTitleText ?? manifest.name)
-                    .font(.headline)
-
-                Spacer()
-
-                // Balance the close button
-                if onDismiss != nil {
-                    Color.clear.frame(width: 32, height: 32)
-                        .padding(.trailing, 12)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-            .background(Color(white: 0.97))
-        }
-    }
-
     // MARK: - Tabbed Content
 
     @ViewBuilder
@@ -136,7 +99,7 @@ public struct MiniAppHostView: View {
             ForEach(Array(tabBar.tabs.enumerated()), id: \.offset) { index, tab in
                 tabNavigationStack(tabIndex: index, rootPage: tab.page, runtime: runtime, servingDir: servingDir)
                     .tabItem {
-                        Label(tab.text, systemImage: tabIconName(for: tab, index: index))
+                        Label(localizedText(tab.text, runtime: runtime), systemImage: tabIconName(for: tab, index: index))
                     }
                     .tag(index)
             }
@@ -156,14 +119,16 @@ public struct MiniAppHostView: View {
                 MiniAppPageView(
                     pagePath: rootPage,
                     runtime: runtime,
-                    servingDir: servingDir
+                    servingDir: servingDir,
+                    onDismiss: onDismiss
                 )
                 .navigationDestination(for: MiniAppPageRoute.self) { route in
                     MiniAppPageView(
                         pagePath: route.path,
                         query: route.query,
                         runtime: runtime,
-                        servingDir: servingDir
+                        servingDir: servingDir,
+                        onDismiss: onDismiss
                     )
                 }
             }
@@ -183,14 +148,16 @@ public struct MiniAppHostView: View {
                     MiniAppPageView(
                         pagePath: firstPage,
                         runtime: runtime,
-                        servingDir: servingDir
+                        servingDir: servingDir,
+                        onDismiss: onDismiss
                     )
                     .navigationDestination(for: MiniAppPageRoute.self) { route in
                         MiniAppPageView(
                             pagePath: route.path,
                             query: route.query,
                             runtime: runtime,
-                            servingDir: servingDir
+                            servingDir: servingDir,
+                            onDismiss: onDismiss
                         )
                     }
                 }
@@ -346,6 +313,14 @@ public struct MiniAppHostView: View {
         }
         return "\(index + 1).circle"
     }
+
+    /// Translate text through the i18n module. If a translation exists for the key, use it;
+    /// otherwise return the text as-is.
+    private func localizedText(_ text: String, runtime: MiniAppRuntime) -> String {
+        guard let i18n = runtime.i18nModule else { return text }
+        let translated = i18n.translate(text)
+        return translated
+    }
 }
 
 // MARK: - MiniAppPageView
@@ -360,17 +335,19 @@ public struct MiniAppPageView: View {
     let query: String
     let runtime: MiniAppRuntime
     let servingDir: URL
+    let onDismiss: (() -> Void)?
 
     @State private var webViewState: WebViewState = WebViewState()
     @State private var navigator: WebViewNavigator = WebViewNavigator()
     @State private var pageReady: Bool = false
     @State private var pageJSLoaded: Bool = false
 
-    public init(pagePath: String, query: String = "", runtime: MiniAppRuntime, servingDir: URL) {
+    public init(pagePath: String, query: String = "", runtime: MiniAppRuntime, servingDir: URL, onDismiss: (() -> Void)? = nil) {
         self.pagePath = pagePath
         self.query = query
         self.runtime = runtime
         self.servingDir = servingDir
+        self.onDismiss = onDismiss
     }
 
     public var body: some View {
@@ -420,6 +397,38 @@ public struct MiniAppPageView: View {
                 runtime.pendingDataUpdate = nil
             }
         }
+        .toolbar {
+            if let onDismiss = onDismiss {
+                ToolbarItem(placement: .automatic) {
+                    Button(action: onDismiss) {
+                        Image("close-miniapp", bundle: .module)
+                    }
+                }
+            }
+        }
+        .navigationTitle(pageTitle)
+        #if !os(macOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+    }
+
+    /// Resolve the navigation title for this page.
+    /// Priority: JS-set title > tab text > empty.
+    private var pageTitle: String {
+        let i18n = runtime.i18nModule
+        // Check if JS set a title for this page
+        if let jsTitle = runtime.navigationModule?.pageTitles[pagePath], !jsTitle.isEmpty {
+            return i18n?.translate(jsTitle) ?? jsTitle
+        }
+        // For tab root pages, use the tab's text
+        if let tabBar = runtime.navigationModule?.tabBarConfig {
+            for tab in tabBar.tabs {
+                if tab.page == pagePath {
+                    return i18n?.translate(tab.text) ?? tab.text
+                }
+            }
+        }
+        return ""
     }
 
     private var pageURL: URL {
