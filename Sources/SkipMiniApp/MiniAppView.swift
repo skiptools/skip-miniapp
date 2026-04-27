@@ -99,13 +99,28 @@ public struct MiniAppHostView: View {
             ForEach(Array(tabBar.tabs.enumerated()), id: \.offset) { index, tab in
                 tabNavigationStack(tabIndex: index, rootPage: tab.page, runtime: runtime, servingDir: servingDir)
                     .tabItem {
-                        Label(localizedText(tab.text, runtime: runtime), systemImage: tabIconName(for: tab, index: index))
+                        tabLabel(for: tab, index: index, runtime: runtime, servingDir: servingDir)
                     }
                     .tag(index)
             }
         }
         .onChange(of: activeTabIndex) { _, newIndex in
             runtime.navigationModule?.activeTabIndex = newIndex
+        }
+    }
+
+    @ViewBuilder
+    private func tabLabel(for tab: MiniAppTab, index: Int, runtime: MiniAppRuntime, servingDir: URL) -> some View {
+        let title = localizedText(tab.text, runtime: runtime)
+        if let icon = tab.icon, !icon.isEmpty {
+            let iconURL = servingDir.appendingPathComponent(icon)
+            Label {
+                Text(title)
+            } icon: {
+                SVGIcon(url: iconURL, render: true)
+            }
+        } else {
+            Label(title, systemImage: tabIconFallback(index: index))
         }
     }
 
@@ -275,6 +290,14 @@ public struct MiniAppHostView: View {
             files.append(pagePath + ".js")
             files.append(pagePath + ".css")
         }
+        // Include tab bar icon SVGs
+        if let tabBar = manifest.tabBar {
+            for tab in tabBar.tabs {
+                if let icon = tab.icon, !icon.isEmpty {
+                    files.append(icon)
+                }
+            }
+        }
         return files
     }
 
@@ -305,8 +328,7 @@ public struct MiniAppHostView: View {
 
     // MARK: - Helpers
 
-    private func tabIconName(for tab: MiniAppTab, index: Int) -> String {
-        // Map common icon names to SF Symbols; fallback to numbered circle
+    private func tabIconFallback(index: Int) -> String {
         let defaultIcons = ["house.fill", "list.bullet", "person.fill", "gear", "star.fill"]
         if index < defaultIcons.count {
             return defaultIcons[index]
