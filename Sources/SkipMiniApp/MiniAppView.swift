@@ -6,37 +6,41 @@ import SwiftUI
 import SkipMiniAppModel
 
 #if os(iOS) || SKIP
+
 import SkipWeb
 
 /// A SwiftUI view that hosts and displays a MiniApp from a package file or expanded directory.
 ///
-/// Extracts the package contents to a temporary directory, parses the manifest,
-/// displays the start page in a WebView, and integrates MiniAppRuntime to manage
-/// JavaScript execution, lifecycle events, and page-to-runtime bridging.
+/// Manages a real SwiftUI TabView (when the manifest defines `tabBar`) with per-tab
+/// NavigationStacks. Each page in the navigation stack gets its own WebView instance.
+/// Implements all 5 WeChat navigation APIs via MiniAppNavigationModule.
 public struct MiniAppHostView: View {
     private let packagePath: String?
     private let directoryURL: URL?
     private let namespace: String
     private let modules: [MiniAppModuleType]
+    private let onDismiss: (() -> Void)?
+
     @State private var manifest: MiniAppManifest?
     @State private var runtime: MiniAppRuntime?
-    @State private var startPageURL: URL?
     @State private var errorMessage: String?
-    @State private var webViewState: WebViewState = WebViewState()
-    @State private var navigator: WebViewNavigator = WebViewNavigator()
     @State private var extractDir: URL?
+    @State private var activeTabIndex: Int = 0
+    @State private var tabPaths: [[MiniAppPageRoute]] = []
 
     /// Load a MiniApp from a `.ma` ZIP package file.
     ///
     /// - Parameters:
     ///   - packagePath: Path to the `.ma` ZIP file.
-    ///   - namespace: The JavaScript global name for the bridge API. Defaults to `""miniapp""`.
+    ///   - namespace: The JavaScript global name for the bridge API. Defaults to `"miniapp"`.
     ///   - modules: API modules to enable.
-    public init(packagePath: String, namespace: String = "miniapp", modules: [MiniAppModuleType]) {
+    ///   - onDismiss: Called when the close button is tapped.
+    public init(packagePath: String, namespace: String = "miniapp", modules: [MiniAppModuleType], onDismiss: (() -> Void)? = nil) {
         self.packagePath = packagePath
         self.directoryURL = nil
         self.namespace = namespace
         self.modules = modules
+        self.onDismiss = onDismiss
     }
 
     /// Load a MiniApp from an expanded directory (local file URL or bundle asset URL).
@@ -45,26 +49,17 @@ public struct MiniAppHostView: View {
     ///   - directoryURL: URL to the expanded MiniApp directory.
     ///   - namespace: The JavaScript global name for the bridge API. Defaults to `"miniapp"`.
     ///   - modules: API modules to enable. Defaults to all built-in modules.
-    public init(directoryURL: URL, namespace: String = "miniapp", modules: [MiniAppModuleType]? = nil) {
+    ///   - onDismiss: Called when the close button is tapped.
+    public init(directoryURL: URL, namespace: String = "miniapp", modules: [MiniAppModuleType]? = nil, onDismiss: (() -> Void)? = nil) {
         self.packagePath = nil
         self.directoryURL = directoryURL
         self.namespace = namespace
         self.modules = modules ?? [MiniAppModuleType(MiniAppFileSystemModule()), MiniAppModuleType(MiniAppNetworkModule()), MiniAppModuleType(MiniAppLoggingModule())]
+        self.onDismiss = onDismiss
     }
 
     public var body: some View {
         VStack(spacing: 0) {
-            if let manifest = manifest {
-                if manifest.window?.navigationStyle != "custom" {
-                    HStack {
-                        Text(manifest.window?.navigationBarTitleText ?? manifest.name)
-                            .font(.headline)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                }
-            }
-
             if let errorMessage = errorMessage {
                 VStack {
                     Text("Error loading MiniApp")
@@ -74,14 +69,298 @@ public struct MiniAppHostView: View {
                         .foregroundStyle(.secondary)
                 }
                 .padding()
-            } else if let url = startPageURL {
+            } else if let manifest = manifest, let runtime = runtime, let extractDir = extractDir {
+                // Content: TabView or single NavigationStack
+                if let tabBar = manifest.tabBar, tabBar.tabs.count >= 2 {
+                    tabbedContent(tabBar: tabBar, manifest: manifest, runtime: runtime, servingDir: extractDir)
+                } else {
+                    singlePageContent(manifest: manifest, runtime: runtime, servingDir: extractDir)
+                }
+            } else {
+                ProgressView()
+            }
+        }
+        .task {
+            loadMiniApp()
+        }
+        .onChange(of: runtime?.navigationModule?.pendingAction) { _, newAction in
+            if let action = newAction {
+                handleNavigationAction(action)
+                runtime?.navigationModule?.pendingAction = nil
+            }
+        }
+    }
+
+    // MARK: - Tabbed Content
+
+    @ViewBuilder
+    private func tabbedContent(tabBar: MiniAppTabBar, manifest: MiniAppManifest, runtime: MiniAppRuntime, servingDir: URL) -> some View {
+        TabView(selection: $activeTabIndex) {
+            ForEach(Array(tabBar.tabs.enumerated()), id: \.offset) { index, tab in
+                tabNavigationStack(tabIndex: index, rootPage: tab.page, runtime: runtime, servingDir: servingDir)
+                    .tabItem {
+                        Label(localizedText(tab.text, runtime: runtime), systemImage: tabIconName(for: tab, index: index))
+                    }
+                    .tag(index)
+            }
+        }
+        .onChange(of: activeTabIndex) { _, newIndex in
+            runtime.navigationModule?.activeTabIndex = newIndex
+        }
+    }
+
+    @ViewBuilder
+    private func tabNavigationStack(tabIndex: Int, rootPage: String, runtime: MiniAppRuntime, servingDir: URL) -> some View {
+        if tabIndex < tabPaths.count {
+            NavigationStack(path: Binding(
+                get: { tabPaths[tabIndex] },
+                set: { tabPaths[tabIndex] = $0 }
+            )) {
+                MiniAppPageView(
+                    pagePath: rootPage,
+                    runtime: runtime,
+                    servingDir: servingDir,
+                    onDismiss: onDismiss
+                )
+                .navigationDestination(for: MiniAppPageRoute.self) { route in
+                    MiniAppPageView(
+                        pagePath: route.path,
+                        query: route.query,
+                        runtime: runtime,
+                        servingDir: servingDir,
+                        onDismiss: onDismiss
+                    )
+                }
+            }
+        }
+    }
+
+    // MARK: - Single Page Content (no tab bar)
+
+    @ViewBuilder
+    private func singlePageContent(manifest: MiniAppManifest, runtime: MiniAppRuntime, servingDir: URL) -> some View {
+        if !tabPaths.isEmpty {
+            NavigationStack(path: Binding(
+                get: { tabPaths[0] },
+                set: { tabPaths[0] = $0 }
+            )) {
+                if let firstPage = manifest.pages.first {
+                    MiniAppPageView(
+                        pagePath: firstPage,
+                        runtime: runtime,
+                        servingDir: servingDir,
+                        onDismiss: onDismiss
+                    )
+                    .navigationDestination(for: MiniAppPageRoute.self) { route in
+                        MiniAppPageView(
+                            pagePath: route.path,
+                            query: route.query,
+                            runtime: runtime,
+                            servingDir: servingDir,
+                            onDismiss: onDismiss
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Navigation Actions
+
+    private func handleNavigationAction(_ action: MiniAppNavAction) {
+        guard let navModule = runtime?.navigationModule else { return }
+
+        switch action {
+        case .navigateTo(let url, let query):
+            // Push page onto current tab's stack
+            navModule.push(page: url)
+            let route = MiniAppPageRoute(path: url, query: query)
+            if activeTabIndex < tabPaths.count {
+                tabPaths[activeTabIndex].append(route)
+            }
+
+        case .navigateBack(let delta):
+            navModule.pop(delta: delta)
+            if activeTabIndex < tabPaths.count {
+                let removeCount = min(delta, tabPaths[activeTabIndex].count)
+                if removeCount > 0 {
+                    tabPaths[activeTabIndex].removeLast(removeCount)
+                }
+            }
+
+        case .redirectTo(let url):
+            navModule.replace(page: url)
+            if activeTabIndex < tabPaths.count {
+                let route = MiniAppPageRoute(path: url)
+                if tabPaths[activeTabIndex].count > 0 {
+                    tabPaths[activeTabIndex][tabPaths[activeTabIndex].count - 1] = route
+                }
+            }
+
+        case .reLaunch(let url):
+            navModule.reLaunch(page: url)
+            // Clear all tab stacks
+            for i in 0..<tabPaths.count {
+                tabPaths[i] = []
+            }
+            // If not a tab root, push it onto the current tab
+            if navModule.tabIndexForPage(url) == nil {
+                tabPaths[navModule.activeTabIndex].append(MiniAppPageRoute(path: url))
+            }
+            activeTabIndex = navModule.activeTabIndex
+
+        case .switchTab(let url):
+            navModule.switchToTab(page: url)
+            activeTabIndex = navModule.activeTabIndex
+        }
+    }
+
+    // MARK: - Loading
+
+    private func loadMiniApp() {
+        do {
+            if let directoryURL = directoryURL {
+                try loadFromDirectory(directoryURL)
+            } else if let packagePath = packagePath {
+                try loadFromPackage(packagePath)
+            }
+        } catch {
+            self.errorMessage = String(describing: error)
+        }
+    }
+
+    private func loadFromPackage(_ path: String) throws {
+        let package = MiniAppPackage(path: path)
+        let m = try package.readManifest()
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("miniapp")
+            .appendingPathComponent(m.appId)
+
+        try? FileManager.default.removeItem(at: dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try package.extractToDirectory(at: dir.path)
+
+        startRuntime(package: package, manifest: m, servingDir: dir)
+    }
+
+    private func loadFromDirectory(_ sourceURL: URL) throws {
+        let dirPackage = MiniAppDirectoryPackage(rootURL: sourceURL)
+        let m = try dirPackage.readManifest()
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("miniapp")
+            .appendingPathComponent(m.appId)
+
+        try? FileManager.default.removeItem(at: dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let filesToCopy = buildFileList(manifest: m)
+        for relativePath in filesToCopy {
+            let srcURL = sourceURL.appendingPathComponent(relativePath)
+            guard let data = try? Data(contentsOf: srcURL), !data.isEmpty else { continue }
+            let destURL = dir.appendingPathComponent(relativePath)
+            let destDir = destURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
+            FileManager.default.createFile(atPath: destURL.path, contents: data, attributes: nil)
+        }
+
+        startRuntime(package: dirPackage, manifest: m, servingDir: dir)
+    }
+
+    private func buildFileList(manifest: MiniAppManifest) -> [String] {
+        var files = ["manifest.json", "app.js", "app.css"]
+        for pagePath in manifest.pages {
+            files.append(pagePath + ".html")
+            files.append(pagePath + ".js")
+            files.append(pagePath + ".css")
+        }
+        return files
+    }
+
+    private func startRuntime(package: MiniAppPackageReader, manifest: MiniAppManifest, servingDir: URL) {
+        self.manifest = manifest
+        self.extractDir = servingDir
+
+        // Ensure navigation module is included
+        var allModules = modules
+        if !allModules.contains(where: { $0.module is MiniAppNavigationModule }) {
+            allModules.append(.navigation)
+        }
+
+        let rt = MiniAppRuntime(package: package, manifest: manifest, namespace: namespace, modules: allModules)
+        rt.start()
+        rt.fireAppShow()
+
+        // Initialize tab paths to match navigation module's tab stacks
+        if let navModule = rt.navigationModule {
+            tabPaths = navModule.tabStacks.map { _ in [MiniAppPageRoute]() }
+        } else {
+            tabPaths = [[]]
+        }
+
+        // Pages load themselves via MiniAppPageView.onAppear
+        self.runtime = rt
+    }
+
+    // MARK: - Helpers
+
+    private func tabIconName(for tab: MiniAppTab, index: Int) -> String {
+        // Map common icon names to SF Symbols; fallback to numbered circle
+        let defaultIcons = ["house.fill", "list.bullet", "person.fill", "gear", "star.fill"]
+        if index < defaultIcons.count {
+            return defaultIcons[index]
+        }
+        return "\(index + 1).circle"
+    }
+
+    /// Translate text through the i18n module. If a translation exists for the key, use it;
+    /// otherwise return the text as-is.
+    private func localizedText(_ text: String, runtime: MiniAppRuntime) -> String {
+        guard let i18n = runtime.i18nModule else { return text }
+        let translated = i18n.translate(text)
+        return translated
+    }
+}
+
+// MARK: - MiniAppPageView
+
+/// A SwiftUI view wrapping a single WebView for one MiniApp page.
+///
+/// Each page in the navigation stack gets its own instance of this view,
+/// with its own WebView, Alpine.js state, and bridge connection. When the
+/// view is popped from the navigation stack, the WebView is destroyed.
+public struct MiniAppPageView: View {
+    let pagePath: String
+    let query: String
+    let runtime: MiniAppRuntime
+    let servingDir: URL
+    let onDismiss: (() -> Void)?
+
+    @State private var webViewState: WebViewState = WebViewState()
+    @State private var navigator: WebViewNavigator = WebViewNavigator()
+    @State private var pageReady: Bool = false
+    @State private var pageJSLoaded: Bool = false
+
+    public init(pagePath: String, query: String = "", runtime: MiniAppRuntime, servingDir: URL, onDismiss: (() -> Void)? = nil) {
+        self.pagePath = pagePath
+        self.query = query
+        self.runtime = runtime
+        self.servingDir = servingDir
+        self.onDismiss = onDismiss
+    }
+
+    public var body: some View {
+        Group {
+            if pageJSLoaded {
                 WebView(
                     configuration: webViewConfiguration,
                     navigator: navigator,
-                    url: url,
+                    url: pageURL,
                     state: $webViewState,
                     onNavigationFinished: {
-                        if let runtime = runtime, let pagePath = runtime.currentPage {
+                        if !pageReady {
+                            pageReady = true
                             runtime.firePageReady(pagePath: pagePath)
                             runtime.firePageShow(pagePath: pagePath)
                         }
@@ -91,36 +370,69 @@ public struct MiniAppHostView: View {
                 ProgressView()
             }
         }
-        .task {
-            loadMiniApp()
-        }
         .onAppear {
-            if let runtime = runtime {
-                runtime.fireAppShow()
-                if let pagePath = runtime.currentPage {
-                    runtime.firePageShow(pagePath: pagePath)
-                }
+            if !pageJSLoaded {
+                // Load the page JS in the runtime (registers handlers, data, lifecycle)
+                runtime.loadPage(pagePath: pagePath, query: query)
+                pageJSLoaded = true
+            } else if pageReady {
+                runtime.firePageShow(pagePath: pagePath)
             }
         }
         .onDisappear {
-            if let runtime = runtime {
-                if let pagePath = runtime.currentPage {
-                    runtime.firePageHide(pagePath: pagePath)
-                }
-                runtime.fireAppHide()
+            if pageReady {
+                runtime.firePageHide(pagePath: pagePath)
             }
         }
-        .onChange(of: runtime?.pendingNavigation) { _, newValue in
-            if let command = newValue, let runtime = runtime {
-                handleNavigation(command: command, runtime: runtime)
-            }
-        }
-        .onChange(of: runtime?.pendingDataUpdate) { _, newValue in
+        .onChange(of: runtime.pendingPageDataUpdates[pagePath]) { _, newValue in
             if let jsonPatch = newValue {
                 pushDataToView(jsonPatch)
-                runtime?.pendingDataUpdate = nil
+                runtime.pendingPageDataUpdates[pagePath] = nil
             }
         }
+        // Also observe the legacy single-page pendingDataUpdate for backward compat
+        .onChange(of: runtime.pendingDataUpdate) { _, newValue in
+            if let jsonPatch = newValue, runtime.currentPage == pagePath {
+                pushDataToView(jsonPatch)
+                runtime.pendingDataUpdate = nil
+            }
+        }
+        .toolbar {
+            if let onDismiss = onDismiss {
+                ToolbarItem(placement: .automatic) {
+                    Button(action: onDismiss) {
+                        Image("close-miniapp", bundle: .module)
+                    }
+                }
+            }
+        }
+        .navigationTitle(pageTitle)
+        #if !os(macOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+    }
+
+    /// Resolve the navigation title for this page.
+    /// Priority: JS-set title > tab text > empty.
+    private var pageTitle: String {
+        let i18n = runtime.i18nModule
+        // Check if JS set a title for this page
+        if let jsTitle = runtime.navigationModule?.pageTitles[pagePath], !jsTitle.isEmpty {
+            return i18n?.translate(jsTitle) ?? jsTitle
+        }
+        // For tab root pages, use the tab's text
+        if let tabBar = runtime.navigationModule?.tabBarConfig {
+            for tab in tabBar.tabs {
+                if tab.page == pagePath {
+                    return i18n?.translate(tab.text) ?? tab.text
+                }
+            }
+        }
+        return ""
+    }
+
+    private var pageURL: URL {
+        servingDir.appendingPathComponent(pagePath + ".html")
     }
 
     /// WebView configuration with message handlers and bridge user script.
@@ -143,22 +455,13 @@ public struct MiniAppHostView: View {
         return source
     }
 
-    /// JavaScript injected into each WebView page for the View Layer.
-    ///
-    /// Uses Alpine.js (CSP build) for reactive rendering. The View Layer has NO
-    /// access to host APIs (storage, fetch, log). It can only:
-    /// 1. Display data via Alpine directives (`x-text`, `x-show`, `x-for`, etc.)
-    /// 2. Send user events back to the Logic Layer via `handler('name')` calls
-    /// 3. Two-way bind inputs via `x-model` + `model('key')` sync
-    ///
-    /// HTML templates use `x-data="page"` and reference `store.*` for data.
+    /// JavaScript injected into this page's WebView for the View Layer.
     private var bridgeUserScript: WebViewUserScript {
-        let initialData = runtime?.initialDataJSON() ?? "{}"
-        let handlerNames = runtime?.pageHandlerNames() ?? []
-        let translationsJSON = runtime?.i18nModule?.translationsJSON() ?? "{}"
-        let activeLocale = runtime?.i18nModule?.activeLocale ?? "en"
+        let initialData = runtime.initialDataJSON(forPage: pagePath)
+        let handlerNames = runtime.pageHandlerNames(forPage: pagePath)
+        let translationsJSON = runtime.i18nModule?.translationsJSON() ?? "{}"
+        let activeLocale = runtime.i18nModule?.activeLocale ?? "en"
 
-        // Generate handler function properties for the Alpine component.
         var handlerProps = ""
         for name in handlerNames {
             let safeName = name.replacingOccurrences(of: "'", with: "\\'")
@@ -217,17 +520,10 @@ public struct MiniAppHostView: View {
             Alpine.data('page', function() {
                 return {
                     get store() { return Alpine.store('page'); },
-                    // Dispatch an event to the Logic Layer by handler name
                     handler: function(name, detail) { window.$handler(name, detail); },
-                    // Sync an x-model key to the Logic Layer
                     model: function(key) { window.$model(key, Alpine.store('page')[key]); },
-                    // Pre-registered page handlers (generated from Page config keys).
-                    // Allows @click="onSaveNote" instead of @click="handler('onSaveNote')".
         \(handlerProps)
                     init: function() {
-                        // Auto-sync x-model inputs to the Logic Layer.
-                        // Discovers all [x-model="store.KEY"] elements and adds native input
-                        // listeners so the view-side change propagates without manual @input.
                         this.$nextTick(function() {
                             var els = document.querySelectorAll('[x-model]');
                             for (var i = 0; i < els.length; i++) {
@@ -248,8 +544,6 @@ public struct MiniAppHostView: View {
         });
 
         // --- setData bridge: Logic Layer → View Layer ---
-        // Called from native via evaluateJavaScript when the Logic Layer calls setData().
-        // Mutates Alpine's reactive store, which automatically triggers DOM updates.
         window.__miniappSetData = function(patch) {
             if (typeof Alpine === 'undefined') return;
             var store = Alpine.store('page');
@@ -280,115 +574,14 @@ public struct MiniAppHostView: View {
         }
         """
 
-        // Assemble: Alpine source first, then bridge/store setup
         let fullScript = alpineSource + "\n" + bridgeScript
-        return WebViewUserScript(source: fullScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        return WebViewUserScript(source: fullScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
     }
 
-    private func loadMiniApp() {
-        do {
-            if let directoryURL = directoryURL {
-                try loadFromDirectory(directoryURL)
-            } else if let packagePath = packagePath {
-                try loadFromPackage(packagePath)
-            }
-        } catch {
-            self.errorMessage = String(describing: error)
-        }
-    }
+    // MARK: - Bridge Message Handling
 
-    private func loadFromPackage(_ path: String) throws {
-        let package = MiniAppPackage(path: path)
-        let m = try package.readManifest()
-
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("miniapp")
-            .appendingPathComponent(m.appId)
-
-        // Clean and recreate extraction directory
-        try? FileManager.default.removeItem(at: dir)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try package.extractToDirectory(at: dir.path)
-
-        startRuntime(package: package, manifest: m, servingDir: dir)
-    }
-
-    private func loadFromDirectory(_ sourceURL: URL) throws {
-        let dirPackage = MiniAppDirectoryPackage(rootURL: sourceURL)
-        let m = try dirPackage.readManifest()
-
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("miniapp")
-            .appendingPathComponent(m.appId)
-
-        // Clean and recreate serving directory
-        try? FileManager.default.removeItem(at: dir)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-
-        // Copy known files from the source directory to the temp serving directory.
-        // Uses Data(contentsOf:) which works for both iOS file URLs and Android APK asset URLs.
-        let filesToCopy = buildFileList(manifest: m)
-        for relativePath in filesToCopy {
-            let srcURL = sourceURL.appendingPathComponent(relativePath)
-            guard let data = try? Data(contentsOf: srcURL), !data.isEmpty else { continue }
-            let destURL = dir.appendingPathComponent(relativePath)
-            let destDir = destURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
-            FileManager.default.createFile(atPath: destURL.path, contents: data, attributes: nil)
-        }
-
-        startRuntime(package: dirPackage, manifest: m, servingDir: dir)
-    }
-
-    /// Build the list of files to copy from the source directory based on the manifest.
-    private func buildFileList(manifest: MiniAppManifest) -> [String] {
-        var files = ["manifest.json", "app.js", "app.css"]
-        for pagePath in manifest.pages {
-            files.append(pagePath + ".html")
-            files.append(pagePath + ".js")
-            files.append(pagePath + ".css")
-        }
-        return files
-    }
-
-    private func startRuntime(package: MiniAppPackageReader, manifest: MiniAppManifest, servingDir: URL) {
-        self.manifest = manifest
-        self.extractDir = servingDir
-
-        let rt = MiniAppRuntime(package: package, manifest: manifest, namespace: namespace, modules: modules)
-        rt.start()
-        rt.fireAppShow()
-
-        if let firstPage = manifest.pages.first {
-            rt.loadPage(pagePath: firstPage)
-            self.startPageURL = servingDir.appendingPathComponent(firstPage + ".html")
-        }
-
-        self.runtime = rt
-    }
-
-    /// Handle a navigation command from the JS runtime.
-    private func handleNavigation(command: MiniAppNavigationCommand, runtime: MiniAppRuntime) {
-        runtime.processNavigation(command)
-
-        // Load the new page URL in the WebView
-        if command.action == .push, let dir = extractDir {
-            let pageURL = dir.appendingPathComponent(command.pagePath + ".html")
-            navigator.load(url: pageURL)
-        } else if command.action == .pop, let currentPage = runtime.currentPage, let dir = extractDir {
-            let pageURL = dir.appendingPathComponent(currentPage + ".html")
-            navigator.load(url: pageURL)
-        }
-    }
-
-    /// Handle bridge messages from the WebView (View Layer).
-    ///
-    /// In the dual-thread model, the only message type from the view is `__event`,
-    /// which dispatches user interactions (taps, input) to the Logic Layer's page handlers.
     @MainActor
     private func handleBridgeMessage(_ message: WebViewMessage) {
-        guard let runtime = runtime else { return }
-
         let json: [String: Any]
         // SKIP NOWARN
         if let dict = message.body as? [String: Any] {
@@ -411,7 +604,6 @@ public struct MiniAppHostView: View {
 
         switch action {
         case "__event":
-            // Dispatch user event from View Layer to Logic Layer.
             if let handlerName = data["handler"] as? String {
                 let eventType = data["type"] as? String ?? "tap"
                 let detail = data["detail"] as? [String: Any] ?? [:]
@@ -421,11 +613,10 @@ public struct MiniAppHostView: View {
                 ]
                 if let eventData = try? JSONSerialization.data(withJSONObject: fullEvent),
                    let eventJSON = String(data: eventData, encoding: .utf8) {
-                    runtime.dispatchEvent(handlerName: handlerName, eventJSON: eventJSON)
+                    runtime.dispatchEvent(handlerName: handlerName, eventJSON: eventJSON, forPage: pagePath)
                 }
             }
         case "__model":
-            // Two-way binding: Alpine x-model updated in view, sync to logic layer's data
             if let key = data["key"] as? String {
                 let value = data["value"] as? String ?? ""
                 runtime.updatePageData(key: key, value: value)
@@ -435,7 +626,7 @@ public struct MiniAppHostView: View {
         }
     }
 
-    /// Push a setData patch from the Logic Layer to the View Layer's WebView.
+    /// Push a setData patch from the Logic Layer to this page's WebView.
     private func pushDataToView(_ jsonPatch: String) {
         let escaped = jsonPatch.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "'", with: "\\'")
         let js = "window.__miniappSetData && window.__miniappSetData(JSON.parse('\(escaped)'))"

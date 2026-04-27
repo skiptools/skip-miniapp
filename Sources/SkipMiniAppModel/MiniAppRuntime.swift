@@ -83,6 +83,10 @@ public enum MiniAppNavigationAction: String, Equatable {
     /// Contains the JSON string of the full page data snapshot to push to the view.
     public var pendingDataUpdate: String?
 
+    /// Per-page pending data updates keyed by page path.
+    /// Used by the multi-page architecture where each page has its own WebView.
+    public var pendingPageDataUpdates: [String: String] = [:]
+
     /// Current page stack (array of page paths).
     public var pageStack: [String] = []
 
@@ -111,6 +115,9 @@ public enum MiniAppNavigationAction: String, Equatable {
 
     /// I18n module reference for the view layer to access translations. Set by MiniAppI18nModule.
     public var i18nModule: MiniAppI18nModule?
+
+    /// Navigation module reference for tab/stack management. Set by MiniAppNavigationModule.
+    public var navigationModule: MiniAppNavigationModule?
 
     /// Log entries captured from `skip.log()` calls, available for host UI.
     public var logEntries: [MiniAppLogEntry] = []
@@ -208,6 +215,57 @@ public enum MiniAppNavigationAction: String, Equatable {
             return result.toString() ?? "{}"
         }
         return "{}"
+    }
+
+    /// Get the initial data JSON for a specific page path.
+    public func initialDataJSON(forPage pagePath: String) -> String {
+        guard let callbacks = pageCallbacks[pagePath],
+              let data = callbacks.data else { return "{}" }
+        if let stringify = context.evaluateScript("JSON.stringify"),
+           let result = try? stringify.call(withArguments: [data]) {
+            return result.toString() ?? "{}"
+        }
+        return "{}"
+    }
+
+    /// Get the custom event handler names for a specific page path.
+    public func pageHandlerNames(forPage pagePath: String) -> [String] {
+        guard let callbacks = pageCallbacks[pagePath],
+              let pageInstance = callbacks.pageInstance else { return [] }
+
+        let skipList = "['data','setData','onLoad','onShow','onReady','onHide','onUnload']"
+        context.setObject(pageInstance, forKeyedSubscript: "__tmpPage")
+        guard let result = context.evaluateScript("""
+        (function() {
+            var keys = Object.keys(__tmpPage);
+            var skipSet = \(skipList);
+            var handlers = [];
+            for (var i = 0; i < keys.length; i++) {
+                if (skipSet.indexOf(keys[i]) === -1 && typeof __tmpPage[keys[i]] === 'function') {
+                    handlers.push(keys[i]);
+                }
+            }
+            return JSON.stringify(handlers);
+        })()
+        """) else { return [] }
+
+        let jsonString = result.toString() ?? "[]"
+        guard let jsonData = jsonString.data(using: .utf8),
+              let names = try? JSONSerialization.jsonObject(with: jsonData) as? [String] else { return [] }
+        return names
+    }
+
+    /// Dispatch a view-layer event to a specific page's handler in the logic layer.
+    public func dispatchEvent(handlerName: String, eventJSON: String, forPage pagePath: String) {
+        guard let callbacks = pageCallbacks[pagePath],
+              let pageInstance = callbacks.pageInstance else { return }
+
+        let safeHandler = handlerName.replacingOccurrences(of: "'", with: "\\'")
+        context.setObject(pageInstance, forKeyedSubscript: "__currentPage")
+        let handler = context.evaluateScript("__currentPage['\(safeHandler)']")
+        if let handler = handler, handler.isFunction {
+            callOnPageInstance(handler, pagePath: pagePath, argsJSON: eventJSON)
+        }
     }
 
     /// Call a function on the current page instance with the correct `this` binding.
@@ -367,6 +425,9 @@ public enum MiniAppNavigationAction: String, Equatable {
                    let result = try? stringify.call(withArguments: [fullData]),
                    let jsonStr = result.toString() as String? {
                     runtime.pendingDataUpdate = jsonStr
+                    // Also update the per-page map for multi-page architecture
+                    let pagePath = runtime.currentPagePath
+                    runtime.pendingPageDataUpdates[pagePath] = jsonStr
                 }
 
                 // Call the optional callback (second arg)

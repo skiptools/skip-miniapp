@@ -257,6 +257,17 @@ public final class MiniAppI18nModule: MiniAppModule {
         return "{}"
     }
 
+    /// Translate a key using the loaded translations. Returns the key itself if no translation found.
+    public func translate(_ key: String) -> String {
+        if let value = translations[key] {
+            return value
+        }
+        if let value = fallbackTranslations[key] {
+            return value
+        }
+        return key
+    }
+
     // MARK: - Helpers
 
     private static func escapeJS(_ str: String) -> String {

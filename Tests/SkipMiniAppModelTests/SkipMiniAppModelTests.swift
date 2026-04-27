@@ -1896,4 +1896,283 @@ final class SkipMiniAppModelTests: XCTestCase {
             XCTAssertNotNil(html, "Page \(pagePath) HTML should be readable from built package")
         }
     }
+
+    // MARK: - Navigation Module Tests
+
+    func testNavigationModuleConfiguration() throws {
+        let navModule = MiniAppNavigationModule()
+        let manifest = MiniAppManifest(
+            appId: "com.example.tabs",
+            name: "Tab App",
+            icons: [MiniAppIcon(src: "icon.png")],
+            version: MiniAppVersion(code: 1, name: "1.0.0"),
+            platformVersion: MiniAppPlatformVersion(minCode: 1),
+            pages: ["pages/home/home", "pages/list/list", "pages/profile/profile", "pages/detail/detail"]
+        )
+        var m = manifest
+        m.tabBar = MiniAppTabBar(tabs: [
+            MiniAppTab(page: "pages/home/home", text: "Home"),
+            MiniAppTab(page: "pages/list/list", text: "List"),
+            MiniAppTab(page: "pages/profile/profile", text: "Profile")
+        ])
+
+        navModule.configure(manifest: m)
+
+        XCTAssertEqual(navModule.tabStacks.count, 3)
+        XCTAssertEqual(navModule.tabStacks[0], ["pages/home/home"])
+        XCTAssertEqual(navModule.tabStacks[1], ["pages/list/list"])
+        XCTAssertEqual(navModule.tabStacks[2], ["pages/profile/profile"])
+        XCTAssertEqual(navModule.activeTabIndex, 0)
+    }
+
+    func testNavigationModulePushAndPop() throws {
+        let navModule = MiniAppNavigationModule()
+        var manifest = MiniAppManifest(
+            appId: "com.example.tabs",
+            name: "Tab App",
+            icons: [MiniAppIcon(src: "icon.png")],
+            version: MiniAppVersion(code: 1, name: "1.0.0"),
+            platformVersion: MiniAppPlatformVersion(minCode: 1),
+            pages: ["pages/home/home", "pages/list/list", "pages/detail/detail"]
+        )
+        manifest.tabBar = MiniAppTabBar(tabs: [
+            MiniAppTab(page: "pages/home/home", text: "Home"),
+            MiniAppTab(page: "pages/list/list", text: "List")
+        ])
+        navModule.configure(manifest: manifest)
+
+        // Push a page onto tab 1
+        navModule.activeTabIndex = 1
+        navModule.push(page: "pages/detail/detail")
+        XCTAssertEqual(navModule.tabStacks[1], ["pages/list/list", "pages/detail/detail"])
+        XCTAssertEqual(navModule.currentPage, "pages/detail/detail")
+
+        // Pop back
+        navModule.pop(delta: 1)
+        XCTAssertEqual(navModule.tabStacks[1], ["pages/list/list"])
+        XCTAssertEqual(navModule.currentPage, "pages/list/list")
+
+        // Pop on root is no-op
+        navModule.pop(delta: 1)
+        XCTAssertEqual(navModule.tabStacks[1], ["pages/list/list"])
+    }
+
+    func testNavigationModuleMaxDepth() throws {
+        let navModule = MiniAppNavigationModule()
+        var manifest = MiniAppManifest(
+            appId: "com.example.tabs",
+            name: "Tab App",
+            icons: [MiniAppIcon(src: "icon.png")],
+            version: MiniAppVersion(code: 1, name: "1.0.0"),
+            platformVersion: MiniAppPlatformVersion(minCode: 1),
+            pages: ["pages/home/home"]
+        )
+        manifest.tabBar = MiniAppTabBar(tabs: [
+            MiniAppTab(page: "pages/home/home", text: "Home")
+        ])
+        navModule.configure(manifest: manifest)
+
+        // Push until max depth
+        for i in 1..<12 {
+            navModule.push(page: "pages/page\(i)/page\(i)")
+        }
+
+        // Should be capped at maxDepth (10)
+        XCTAssertEqual(navModule.currentStack.count, navModule.maxDepth)
+    }
+
+    func testNavigationModuleReplace() throws {
+        let navModule = MiniAppNavigationModule()
+        var manifest = MiniAppManifest(
+            appId: "com.example.tabs",
+            name: "Tab App",
+            icons: [MiniAppIcon(src: "icon.png")],
+            version: MiniAppVersion(code: 1, name: "1.0.0"),
+            platformVersion: MiniAppPlatformVersion(minCode: 1),
+            pages: ["pages/home/home", "pages/other/other"]
+        )
+        manifest.tabBar = MiniAppTabBar(tabs: [
+            MiniAppTab(page: "pages/home/home", text: "Home")
+        ])
+        navModule.configure(manifest: manifest)
+
+        navModule.push(page: "pages/detail/detail")
+        XCTAssertEqual(navModule.currentStack.count, 2)
+
+        // Replace top page
+        navModule.replace(page: "pages/other/other")
+        XCTAssertEqual(navModule.currentStack.count, 2)
+        XCTAssertEqual(navModule.currentPage, "pages/other/other")
+    }
+
+    func testNavigationModuleReLaunch() throws {
+        let navModule = MiniAppNavigationModule()
+        var manifest = MiniAppManifest(
+            appId: "com.example.tabs",
+            name: "Tab App",
+            icons: [MiniAppIcon(src: "icon.png")],
+            version: MiniAppVersion(code: 1, name: "1.0.0"),
+            platformVersion: MiniAppPlatformVersion(minCode: 1),
+            pages: ["pages/home/home", "pages/list/list", "pages/detail/detail"]
+        )
+        manifest.tabBar = MiniAppTabBar(tabs: [
+            MiniAppTab(page: "pages/home/home", text: "Home"),
+            MiniAppTab(page: "pages/list/list", text: "List")
+        ])
+        navModule.configure(manifest: manifest)
+
+        // Build up some state
+        navModule.activeTabIndex = 1
+        navModule.push(page: "pages/detail/detail")
+        XCTAssertEqual(navModule.tabStacks[1].count, 2)
+
+        // reLaunch to a tab root page
+        navModule.reLaunch(page: "pages/home/home")
+        XCTAssertEqual(navModule.activeTabIndex, 0)
+        XCTAssertEqual(navModule.tabStacks[0], ["pages/home/home"])
+        // Other tabs are reset to their roots
+        XCTAssertEqual(navModule.tabStacks[1].count, 1)
+    }
+
+    func testNavigationModuleSwitchTab() throws {
+        let navModule = MiniAppNavigationModule()
+        var manifest = MiniAppManifest(
+            appId: "com.example.tabs",
+            name: "Tab App",
+            icons: [MiniAppIcon(src: "icon.png")],
+            version: MiniAppVersion(code: 1, name: "1.0.0"),
+            platformVersion: MiniAppPlatformVersion(minCode: 1),
+            pages: ["pages/home/home", "pages/list/list", "pages/profile/profile"]
+        )
+        manifest.tabBar = MiniAppTabBar(tabs: [
+            MiniAppTab(page: "pages/home/home", text: "Home"),
+            MiniAppTab(page: "pages/list/list", text: "List"),
+            MiniAppTab(page: "pages/profile/profile", text: "Profile")
+        ])
+        navModule.configure(manifest: manifest)
+
+        XCTAssertEqual(navModule.activeTabIndex, 0)
+
+        navModule.switchToTab(page: "pages/profile/profile")
+        XCTAssertEqual(navModule.activeTabIndex, 2)
+
+        navModule.switchToTab(page: "pages/list/list")
+        XCTAssertEqual(navModule.activeTabIndex, 1)
+
+        // Switch to non-existent tab is no-op
+        navModule.switchToTab(page: "pages/nonexistent/page")
+        XCTAssertEqual(navModule.activeTabIndex, 1)
+    }
+
+    func testNavigationModuleNoTabBar() throws {
+        let navModule = MiniAppNavigationModule()
+        let manifest = MiniAppManifest(
+            appId: "com.example.notabs",
+            name: "No Tabs",
+            icons: [MiniAppIcon(src: "icon.png")],
+            version: MiniAppVersion(code: 1, name: "1.0.0"),
+            platformVersion: MiniAppPlatformVersion(minCode: 1),
+            pages: ["pages/index/index", "pages/detail/detail"]
+        )
+
+        navModule.configure(manifest: manifest)
+
+        // Single stack mode
+        XCTAssertEqual(navModule.tabStacks.count, 1)
+        XCTAssertEqual(navModule.tabStacks[0], ["pages/index/index"])
+        XCTAssertNil(navModule.tabBarConfig)
+    }
+
+    func testManifestTabBarParsing() throws {
+        let json = """
+        {
+            "app_id": "com.example.tabbed",
+            "name": "Tabbed App",
+            "icons": [{"src": "icon.png"}],
+            "version": {"code": 1, "name": "1.0.0"},
+            "platform_version": {"min_code": 1},
+            "pages": ["pages/home/home", "pages/list/list", "pages/profile/profile"],
+            "tab_bar": {
+                "tabs": [
+                    {"page": "pages/home/home", "text": "Home", "icon": "icons/home.svg"},
+                    {"page": "pages/list/list", "text": "List"},
+                    {"page": "pages/profile/profile", "text": "Profile", "icon": "icons/profile.svg"}
+                ]
+            }
+        }
+        """
+        let data = try XCTUnwrap(json.data(using: .utf8))
+        let manifest = try JSONDecoder().decode(MiniAppManifest.self, from: data)
+
+        let tabBar = try XCTUnwrap(manifest.tabBar)
+        XCTAssertEqual(tabBar.tabs.count, 3)
+        XCTAssertEqual(tabBar.tabs[0].page, "pages/home/home")
+        XCTAssertEqual(tabBar.tabs[0].text, "Home")
+        XCTAssertEqual(tabBar.tabs[0].icon, "icons/home.svg")
+        XCTAssertEqual(tabBar.tabs[1].page, "pages/list/list")
+        XCTAssertEqual(tabBar.tabs[1].text, "List")
+        XCTAssertNil(tabBar.tabs[1].icon)
+        XCTAssertEqual(tabBar.tabs[2].page, "pages/profile/profile")
+    }
+
+    func testNavigationJSAPIs() throws {
+        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest, modules: [.navigation])
+        runtime.start()
+
+        // navigateTo
+        runtime.evaluateScript("miniapp.navigateTo({url: 'pages/detail/detail', query: 'id=5'})")
+        let navAction = runtime.navigationModule?.pendingAction
+        XCTAssertEqual(navAction, .navigateTo(url: "pages/detail/detail", query: "id=5"))
+
+        runtime.navigationModule?.pendingAction = nil
+
+        // navigateBack
+        runtime.evaluateScript("miniapp.navigateBack({delta: 2})")
+        XCTAssertEqual(runtime.navigationModule?.pendingAction, .navigateBack(delta: 2))
+
+        runtime.navigationModule?.pendingAction = nil
+
+        // redirectTo
+        runtime.evaluateScript("miniapp.redirectTo({url: 'pages/other/other'})")
+        XCTAssertEqual(runtime.navigationModule?.pendingAction, .redirectTo(url: "pages/other/other"))
+
+        runtime.navigationModule?.pendingAction = nil
+
+        // reLaunch
+        runtime.evaluateScript("miniapp.reLaunch({url: 'pages/home/home'})")
+        XCTAssertEqual(runtime.navigationModule?.pendingAction, .reLaunch(url: "pages/home/home"))
+
+        runtime.navigationModule?.pendingAction = nil
+
+        // switchTab
+        runtime.evaluateScript("miniapp.switchTab({url: 'pages/list/list'})")
+        XCTAssertEqual(runtime.navigationModule?.pendingAction, .switchTab(url: "pages/list/list"))
+    }
+
+    func testNavigationBackDefaultDelta() throws {
+        let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest, modules: [.navigation])
+        runtime.start()
+
+        // navigateBack with no args should default to delta=1
+        runtime.evaluateScript("miniapp.navigateBack()")
+        XCTAssertEqual(runtime.navigationModule?.pendingAction, .navigateBack(delta: 1))
+    }
+
+    func testPageRouteHashable() {
+        let route1 = MiniAppPageRoute(path: "pages/home/home", query: "")
+        let route2 = MiniAppPageRoute(path: "pages/home/home", query: "")
+        let route3 = MiniAppPageRoute(path: "pages/detail/detail", query: "id=1")
+
+        XCTAssertEqual(route1, route2)
+        XCTAssertNotEqual(route1, route3)
+
+        // Verify Hashable works (for NavigationStack path)
+        var set: Set<MiniAppPageRoute> = []
+        set.insert(route1)
+        set.insert(route2)
+        set.insert(route3)
+        XCTAssertEqual(set.count, 2)
+    }
 }
