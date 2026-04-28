@@ -628,7 +628,7 @@ public struct MiniAppPageView: View {
         case "__event":
             if let handlerName = data["handler"] as? String {
                 let eventType = data["type"] as? String ?? "tap"
-                let detail = data["detail"] as? [String: Any] ?? [:]
+                let detail: Any = data["detail"] ?? [String: Any]()
                 let fullEvent: [String: Any] = [
                     "type": eventType,
                     "detail": detail
