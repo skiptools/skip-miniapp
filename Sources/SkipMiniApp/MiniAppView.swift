@@ -20,6 +20,7 @@ public struct MiniAppHostView: View {
     private let namespace: String
     private let modules: [MiniAppModuleType]
     private let onDismiss: (() -> Void)?
+    private let onSnapshot: ((Data) -> Void)?
 
     @State private var manifest: MiniAppManifest?
     @State private var runtime: MiniAppRuntime?
@@ -35,12 +36,13 @@ public struct MiniAppHostView: View {
     ///   - namespace: The JavaScript global name for the bridge API. Defaults to `"miniapp"`.
     ///   - modules: API modules to enable.
     ///   - onDismiss: Called when the close button is tapped.
-    public init(packagePath: String, namespace: String = "miniapp", modules: [MiniAppModuleType], onDismiss: (() -> Void)? = nil) {
+    public init(packagePath: String, namespace: String = "miniapp", modules: [MiniAppModuleType], onDismiss: (() -> Void)? = nil, onSnapshot: ((Data) -> Void)? = nil) {
         self.packagePath = packagePath
         self.directoryURL = nil
         self.namespace = namespace
         self.modules = modules
         self.onDismiss = onDismiss
+        self.onSnapshot = onSnapshot
     }
 
     /// Load a MiniApp from an expanded directory (local file URL or bundle asset URL).
@@ -50,12 +52,13 @@ public struct MiniAppHostView: View {
     ///   - namespace: The JavaScript global name for the bridge API. Defaults to `"miniapp"`.
     ///   - modules: API modules to enable. Defaults to all built-in modules.
     ///   - onDismiss: Called when the close button is tapped.
-    public init(directoryURL: URL, namespace: String = "miniapp", modules: [MiniAppModuleType]? = nil, onDismiss: (() -> Void)? = nil) {
+    public init(directoryURL: URL, namespace: String = "miniapp", modules: [MiniAppModuleType]? = nil, onDismiss: (() -> Void)? = nil, onSnapshot: ((Data) -> Void)? = nil) {
         self.packagePath = nil
         self.directoryURL = directoryURL
         self.namespace = namespace
         self.modules = modules ?? [MiniAppModuleType(MiniAppFileSystemModule()), MiniAppModuleType(MiniAppNetworkModule()), MiniAppModuleType(MiniAppLoggingModule())]
         self.onDismiss = onDismiss
+        self.onSnapshot = onSnapshot
     }
 
     public var body: some View {
@@ -135,7 +138,8 @@ public struct MiniAppHostView: View {
                     pagePath: rootPage,
                     runtime: runtime,
                     servingDir: servingDir,
-                    onDismiss: onDismiss
+                    onDismiss: onDismiss,
+                    onSnapshot: onSnapshot
                 )
                 .navigationDestination(for: MiniAppPageRoute.self) { route in
                     MiniAppPageView(
@@ -143,7 +147,8 @@ public struct MiniAppHostView: View {
                         query: route.query,
                         runtime: runtime,
                         servingDir: servingDir,
-                        onDismiss: onDismiss
+                        onDismiss: onDismiss,
+                        onSnapshot: onSnapshot
                     )
                 }
             }
@@ -164,7 +169,8 @@ public struct MiniAppHostView: View {
                         pagePath: firstPage,
                         runtime: runtime,
                         servingDir: servingDir,
-                        onDismiss: onDismiss
+                        onDismiss: onDismiss,
+                        onSnapshot: onSnapshot
                     )
                     .navigationDestination(for: MiniAppPageRoute.self) { route in
                         MiniAppPageView(
@@ -172,7 +178,8 @@ public struct MiniAppHostView: View {
                             query: route.query,
                             runtime: runtime,
                             servingDir: servingDir,
-                            onDismiss: onDismiss
+                            onDismiss: onDismiss,
+                            onSnapshot: onSnapshot
                         )
                     }
                 }
@@ -358,18 +365,20 @@ public struct MiniAppPageView: View {
     let runtime: MiniAppRuntime
     let servingDir: URL
     let onDismiss: (() -> Void)?
+    let onSnapshot: ((Data) -> Void)?
 
     @State private var webViewState: WebViewState = WebViewState()
     @State private var navigator: WebViewNavigator = WebViewNavigator()
     @State private var pageReady: Bool = false
     @State private var pageJSLoaded: Bool = false
 
-    public init(pagePath: String, query: String = "", runtime: MiniAppRuntime, servingDir: URL, onDismiss: (() -> Void)? = nil) {
+    public init(pagePath: String, query: String = "", runtime: MiniAppRuntime, servingDir: URL, onDismiss: (() -> Void)? = nil, onSnapshot: ((Data) -> Void)? = nil) {
         self.pagePath = pagePath
         self.query = query
         self.runtime = runtime
         self.servingDir = servingDir
         self.onDismiss = onDismiss
+        self.onSnapshot = onSnapshot
     }
 
     public var body: some View {
@@ -405,6 +414,7 @@ public struct MiniAppPageView: View {
             if pageReady {
                 runtime.firePageHide(pagePath: pagePath)
             }
+            captureSnapshot()
         }
         .onChange(of: runtime.pendingPageDataUpdates[pagePath]) { _, newValue in
             if let jsonPatch = newValue {
@@ -451,6 +461,19 @@ public struct MiniAppPageView: View {
             }
         }
         return ""
+    }
+
+    private func captureSnapshot() {
+        guard let onSnapshot = onSnapshot, let webEngine = navigator.webEngine else { return }
+        Task { @MainActor in
+            do {
+                let config = SkipWebSnapshotConfiguration(snapshotWidth: 300)
+                let snapshot = try await webEngine.takeSnapshot(configuration: config)
+                onSnapshot(snapshot.pngData)
+            } catch {
+                // Snapshot capture is best-effort; ignore errors
+            }
+        }
     }
 
     private var pageURL: URL {
