@@ -311,11 +311,13 @@ public enum MiniAppNavigationAction: String, Equatable {
 
     // MARK: - Module Helpers
 
-    /// The JSContext for module registration. Internal to the framework.
-    var jsContext: JSContext { return context }
+    /// The JSContext for module registration. Public for add-on module packages.
+    // SKIP NOWARN
+    public var jsContext: JSContext { return context }
 
     /// The namespace JSValue for module function registration. Set during registerMiniAppNamespace().
-    var namespaceObject: JSValue?
+    // SKIP NOWARN
+    public var namespaceObject: JSValue?
 
     // MARK: - Global Registration
 
@@ -590,7 +592,9 @@ public enum MiniAppNavigationAction: String, Equatable {
         }
         miniapp.setObject(getSystemInfoFn, forKeyedSubscript: "getSystemInfo")
 
-        // --- Core: navigateTo / navigateBack ---
+        // --- Core: nav.navigateTo / nav.navigateBack ---
+        let coreNavObj = JSValue(newObjectIn: context)
+
         let navigateToFn = JSValue(newFunctionIn: context) { ctx, obj, args in
             if let options = args.first, options.isObject {
                 let urlVal = options.objectForKeyedSubscript("url")
@@ -601,7 +605,7 @@ public enum MiniAppNavigationAction: String, Equatable {
             }
             return JSValue(undefinedIn: ctx)
         }
-        miniapp.setObject(navigateToFn, forKeyedSubscript: "navigateTo")
+        coreNavObj.setObject(navigateToFn, forKeyedSubscript: "navigateTo")
 
         let navigateBackFn = JSValue(newFunctionIn: context) { ctx, obj, args in
             if runtime.pageStack.count > 1 {
@@ -609,7 +613,9 @@ public enum MiniAppNavigationAction: String, Equatable {
             }
             return JSValue(undefinedIn: ctx)
         }
-        miniapp.setObject(navigateBackFn, forKeyedSubscript: "navigateBack")
+        coreNavObj.setObject(navigateBackFn, forKeyedSubscript: "navigateBack")
+
+        miniapp.setObject(coreNavObj, forKeyedSubscript: "nav")
 
         // --- Register module APIs ---
         self.namespaceObject = miniapp

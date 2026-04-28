@@ -101,9 +101,12 @@ public final class MiniAppNetworkModule: MiniAppModule {
         }
         """)
 
+        // Create skip.net namespace
+        let netObj = JSValue(newObjectIn: context)
         if let fetchRef = context.evaluateScript("fetch") {
-            namespace.setObject(fetchRef, forKeyedSubscript: "fetch")
+            netObj.setObject(fetchRef, forKeyedSubscript: "fetch")
         }
+        namespace.setObject(netObj, forKeyedSubscript: "net")
     }
 }
 #endif
