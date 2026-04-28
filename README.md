@@ -33,7 +33,7 @@ graph TB
     NS --> |"hosts"| AL
     RT --> |"setData(patch)"| BD
     AL --> |"events"| RT
-    PJ --> |"skip.navigateTo()"| MOD
+    PJ --> |"skip.nav.navigateTo()"| MOD
     MOD --> |"pendingAction"| HV
 ```
 
@@ -43,7 +43,7 @@ The separation between Logic and View layers provides security isolation and per
 
 | Layer | Runs In | Can Access | Cannot Access |
 |-------|---------|-----------|---------------|
-| **Logic Layer** | `JSContext` (JavaScriptCore) | Host APIs (`skip.fs`, `skip.fetch`, `skip.navigateTo`, etc.), page data via `this.data` and `this.setData()` | DOM, `document`, `window`, any HTML |
+| **Logic Layer** | `JSContext` (JavaScriptCore) | Host APIs (`skip.fs`, `skip.net.fetch`, `skip.nav.navigateTo`, etc.), page data via `this.data` and `this.setData()` | DOM, `document`, `window`, any HTML |
 | **View Layer** | `WKWebView` (iOS) / `WebView` (Android) | Alpine.js reactive store, HTML templates, CSS, user event dispatch | Host APIs, file system, network, navigation |
 
 **Data flows one way**: Logic → View via `setData()` patches. User interactions flow back as named events.
@@ -220,7 +220,7 @@ Page({
 
     onLoad: function(options) {
         // Page created — options.query available
-        skip.setNavigationBarTitle({ title: 'nav.home' });
+        skip.nav.setNavigationBarTitle({ title: 'nav.home' });
         this.setData({ count: 1 });
     },
     onShow: function() { /* Page became visible */ },
@@ -243,12 +243,12 @@ Five WeChat-compatible navigation APIs, plus `setNavigationBarTitle`:
 
 | API | Behavior |
 |-----|----------|
-| `skip.navigateTo({ url, query })` | Push page onto current tab's stack (max 10 levels) |
-| `skip.navigateBack({ delta })` | Pop `delta` pages (default 1, never pops root) |
-| `skip.redirectTo({ url })` | Replace current page (no new stack entry) |
-| `skip.reLaunch({ url })` | Clear all stacks, reset to single page |
-| `skip.switchTab({ url })` | Switch to the tab whose root matches `url` |
-| `skip.setNavigationBarTitle({ title })` | Set the navigation bar title (supports i18n keys) |
+| `skip.nav.navigateTo({ url, query })` | Push page onto current tab's stack (max 10 levels) |
+| `skip.nav.navigateBack({ delta })` | Pop `delta` pages (default 1, never pops root) |
+| `skip.nav.redirectTo({ url })` | Replace current page (no new stack entry) |
+| `skip.nav.reLaunch({ url })` | Clear all stacks, reset to single page |
+| `skip.nav.switchTab({ url })` | Switch to the tab whose root matches `url` |
+| `skip.nav.setNavigationBarTitle({ title })` | Set the navigation bar title (supports i18n keys) |
 
 Navigation is managed by real SwiftUI `NavigationStack` (per-tab) with `TabView` when the manifest defines a `tab_bar`. Each pushed page gets its own isolated WebView.
 
@@ -284,8 +284,8 @@ The runtime is extensible via `MiniAppModule`. Built-in modules:
 
 | Module | Namespace | Description |
 |--------|-----------|-------------|
-| Navigation | `skip.navigateTo()` etc. | 5 WeChat navigation APIs + title |
-| Network | `skip.fetch(url, options)` | Promise-based HTTP (GET/POST/PUT/DELETE) |
+| Navigation | `skip.nav.navigateTo()` etc. | 5 WeChat navigation APIs + title |
+| Network | `skip.net.fetch(url, options)` | Promise-based HTTP (GET/POST/PUT/DELETE) |
 | File System | `skip.fs.root` | OPFS-style sandboxed storage (per-app isolation) |
 | I18n | `skip.i18n.t(key)` | Translations, number/date formatting, plurals |
 | Logging | `skip.log(...)` | Structured logging with host capture |

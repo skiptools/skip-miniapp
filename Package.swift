@@ -9,20 +9,21 @@ let package = Package(
     products: [
         .library(name: "SkipMiniApp", type: .dynamic, targets: ["SkipMiniApp"]),
         .library(name: "SkipMiniAppModel", type: .dynamic, targets: ["SkipMiniAppModel"]),
+        .library(name: "SkipMiniAppSQL", type: .dynamic, targets: ["SkipMiniAppSQL"]),
     ],
     dependencies: [
         .package(url: "https://source.skip.tools/skip.git", from: "1.7.2"),
-        .package(url: "https://source.skip.tools/skip-foundation.git", from: "1.0.0"),
         .package(url: "https://source.skip.tools/skip-model.git", from: "1.0.0"),
         .package(url: "https://source.skip.tools/skip-ui.git", from: "1.0.0"),
-        .package(url: "https://source.skip.tools/skip-sql.git", "0.0.0"..<"2.0.0"),
         .package(url: "https://source.skip.tools/skip-web.git", "0.0.0"..<"2.0.0"),
         .package(url: "https://source.skip.tools/skip-script.git", "0.0.0"..<"2.0.0"),
         .package(url: "https://source.skip.tools/skip-zip.git", "0.0.0"..<"2.0.0"),
+        .package(url: "https://source.skip.tools/skip-sql.git", "0.0.0"..<"2.0.0"), // for SkipMiniAppSQL
     ],
     targets: [
         .target(name: "SkipMiniApp", dependencies: [
             "SkipMiniAppModel",
+            "SkipMiniAppSQL",
             .product(name: "SkipUI", package: "skip-ui"),
             .product(name: "SkipWeb", package: "skip-web"),
         ], resources: [.process("Resources")], plugins: [.plugin(name: "skipstone", package: "skip")]),
@@ -31,16 +32,22 @@ let package = Package(
             .product(name: "SkipTest", package: "skip")
         ], resources: [.process("Resources")], plugins: [.plugin(name: "skipstone", package: "skip")]),
         .target(name: "SkipMiniAppModel", dependencies: [
-            .product(name: "SkipFoundation", package: "skip-foundation"),
             .product(name: "SkipModel", package: "skip-model"),
             .product(name: "SkipScript", package: "skip-script"),
-            .product(name: "SkipSQL", package: "skip-sql"),
             .product(name: "SkipZip", package: "skip-zip"),
         ], resources: [.process("Resources")], plugins: [.plugin(name: "skipstone", package: "skip")]),
         .testTarget(name: "SkipMiniAppModelTests", dependencies: [
             "SkipMiniAppModel",
             .product(name: "SkipTest", package: "skip")
         ], resources: [.process("Resources"), .copy("miniapp-samples")], plugins: [.plugin(name: "skipstone", package: "skip")]),
+        .target(name: "SkipMiniAppSQL", dependencies: [
+            "SkipMiniAppModel",
+            .product(name: "SkipSQL", package: "skip-sql"),
+        ], plugins: [.plugin(name: "skipstone", package: "skip")]),
+        .testTarget(name: "SkipMiniAppSQLTests", dependencies: [
+            "SkipMiniAppSQL",
+            .product(name: "SkipTest", package: "skip")
+        ], resources: [.process("Resources")], plugins: [.plugin(name: "skipstone", package: "skip")]),
     ]
 )
 

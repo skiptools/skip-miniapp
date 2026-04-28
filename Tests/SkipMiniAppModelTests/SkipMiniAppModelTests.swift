@@ -1132,8 +1132,7 @@ final class SkipMiniAppModelTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
-        let fsModule = MiniAppFileSystemModule(baseDirectory: tempDir)
-        let runtime = MiniAppRuntime(package: pkg, manifest: manifest, modules: [MiniAppModuleType(fsModule)])
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest, modules: [.fileSystem(baseDirectory: tempDir)])
         runtime.start()
 
         runtime.evaluateScript("miniapp.fs.root.getFileHandle('test.txt', {create: true}).write('hello from JS')")
@@ -1146,8 +1145,7 @@ final class SkipMiniAppModelTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
-        let fsModule = MiniAppFileSystemModule(baseDirectory: tempDir)
-        let runtime = MiniAppRuntime(package: pkg, manifest: manifest, modules: [MiniAppModuleType(fsModule)])
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest, modules: [.fileSystem(baseDirectory: tempDir)])
         runtime.start()
 
         runtime.evaluateScript("miniapp.fs.root.getDirectoryHandle('docs', {create: true})")
@@ -1163,8 +1161,7 @@ final class SkipMiniAppModelTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
-        let fsModule = MiniAppFileSystemModule(baseDirectory: tempDir)
-        let runtime = MiniAppRuntime(package: pkg, manifest: manifest, modules: [MiniAppModuleType(fsModule)])
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest, modules: [.fileSystem(baseDirectory: tempDir)])
         runtime.start()
 
         runtime.evaluateScript("miniapp.fs.root.getFileHandle('sized.txt', {create: true}).write('12345')")
@@ -1178,16 +1175,14 @@ final class SkipMiniAppModelTests: XCTestCase {
 
         let appJS = "App({})"
         let (pkg1, manifest1) = try createRuntimePackage(appJS: appJS)
-        let fsModule1 = MiniAppFileSystemModule(baseDirectory: tempDir)
-        let runtime1 = MiniAppRuntime(package: pkg1, manifest: manifest1, modules: [MiniAppModuleType(fsModule1)])
+        let runtime1 = MiniAppRuntime(package: pkg1, manifest: manifest1, modules: [.fileSystem(baseDirectory: tempDir)])
         runtime1.start()
 
         runtime1.evaluateScript("miniapp.fs.root.getFileHandle('persist.txt', {create: true}).write('survives')")
 
         // Create a new runtime with the same base directory
         let (pkg2, manifest2) = try createRuntimePackage(appJS: appJS)
-        let fsModule2 = MiniAppFileSystemModule(baseDirectory: tempDir)
-        let runtime2 = MiniAppRuntime(package: pkg2, manifest: manifest2, modules: [MiniAppModuleType(fsModule2)])
+        let runtime2 = MiniAppRuntime(package: pkg2, manifest: manifest2, modules: [.fileSystem(baseDirectory: tempDir)])
         runtime2.start()
 
         let result = runtime2.evaluateScript("miniapp.fs.root.getFileHandle('persist.txt').read()")
@@ -1220,8 +1215,7 @@ final class SkipMiniAppModelTests: XCTestCase {
         try builder.finalize()
 
         let package = MiniAppPackage(path: pkgPath)
-        let i18nModule = MiniAppI18nModule()
-        let runtime = MiniAppRuntime(package: package, manifest: manifest, modules: [MiniAppModuleType(i18nModule)])
+        let runtime = MiniAppRuntime(package: package, manifest: manifest, modules: [.i18n])
         runtime.start()
 
         let result = runtime.evaluateScript("miniapp.i18n.t('greeting')")
@@ -1254,8 +1248,7 @@ final class SkipMiniAppModelTests: XCTestCase {
         try builder.finalize()
 
         let package = MiniAppPackage(path: pkgPath)
-        let i18nModule = MiniAppI18nModule()
-        let runtime = MiniAppRuntime(package: package, manifest: manifest, modules: [MiniAppModuleType(i18nModule)])
+        let runtime = MiniAppRuntime(package: package, manifest: manifest, modules: [.i18n])
         runtime.start()
 
         // Missing key returns the key itself
@@ -1286,8 +1279,7 @@ final class SkipMiniAppModelTests: XCTestCase {
         try builder.finalize()
 
         let package = MiniAppPackage(path: pkgPath)
-        let i18nModule = MiniAppI18nModule()
-        let runtime = MiniAppRuntime(package: package, manifest: manifest, modules: [MiniAppModuleType(i18nModule)])
+        let runtime = MiniAppRuntime(package: package, manifest: manifest, modules: [.i18n])
         runtime.start()
 
         let result = runtime.evaluateScript("miniapp.i18n.t('hello', {name: 'World'})")
@@ -1320,8 +1312,7 @@ final class SkipMiniAppModelTests: XCTestCase {
         try builder.finalize()
 
         let package = MiniAppPackage(path: pkgPath)
-        let i18nModule = MiniAppI18nModule()
-        let runtime = MiniAppRuntime(package: package, manifest: manifest, modules: [MiniAppModuleType(i18nModule)])
+        let runtime = MiniAppRuntime(package: package, manifest: manifest, modules: [.i18n])
         runtime.start()
 
         // Plural: 1 item, 5 items
@@ -1334,8 +1325,7 @@ final class SkipMiniAppModelTests: XCTestCase {
 
     func testI18nNumberFormat() throws {
         let (pkg, manifest) = try createRuntimePackage(appJS: "App({})")
-        let i18nModule = MiniAppI18nModule()
-        let runtime = MiniAppRuntime(package: pkg, manifest: manifest, modules: [MiniAppModuleType(i18nModule)])
+        let runtime = MiniAppRuntime(package: pkg, manifest: manifest, modules: [.i18n])
         runtime.start()
 
         // Basic number formatting — should at least produce a string representation
@@ -1368,8 +1358,7 @@ final class SkipMiniAppModelTests: XCTestCase {
         try builder.finalize()
 
         let package = MiniAppPackage(path: pkgPath)
-        let i18nModule = MiniAppI18nModule()
-        let runtime = MiniAppRuntime(package: package, manifest: manifest, modules: [MiniAppModuleType(i18nModule)])
+        let runtime = MiniAppRuntime(package: package, manifest: manifest, modules: [.i18n])
         runtime.start()
 
         let locale = runtime.evaluateScript("miniapp.i18n.locale")
@@ -1415,7 +1404,7 @@ final class SkipMiniAppModelTests: XCTestCase {
 
         XCTAssertNil(runtime.pendingNavigation)
 
-        runtime.evaluateScript("miniapp.navigateTo({url: 'pages/detail/detail', query: 'id=42'})")
+        runtime.evaluateScript("miniapp.nav.navigateTo({url: 'pages/detail/detail', query: 'id=42'})")
 
         XCTAssertNotNil(runtime.pendingNavigation)
         XCTAssertEqual(runtime.pendingNavigation?.action, .push)
@@ -2121,32 +2110,32 @@ final class SkipMiniAppModelTests: XCTestCase {
         runtime.start()
 
         // navigateTo
-        runtime.evaluateScript("miniapp.navigateTo({url: 'pages/detail/detail', query: 'id=5'})")
+        runtime.evaluateScript("miniapp.nav.navigateTo({url: 'pages/detail/detail', query: 'id=5'})")
         let navAction = runtime.navigationModule?.pendingAction
         XCTAssertEqual(navAction, .navigateTo(url: "pages/detail/detail", query: "id=5"))
 
         runtime.navigationModule?.pendingAction = nil
 
         // navigateBack
-        runtime.evaluateScript("miniapp.navigateBack({delta: 2})")
+        runtime.evaluateScript("miniapp.nav.navigateBack({delta: 2})")
         XCTAssertEqual(runtime.navigationModule?.pendingAction, .navigateBack(delta: 2))
 
         runtime.navigationModule?.pendingAction = nil
 
         // redirectTo
-        runtime.evaluateScript("miniapp.redirectTo({url: 'pages/other/other'})")
+        runtime.evaluateScript("miniapp.nav.redirectTo({url: 'pages/other/other'})")
         XCTAssertEqual(runtime.navigationModule?.pendingAction, .redirectTo(url: "pages/other/other"))
 
         runtime.navigationModule?.pendingAction = nil
 
         // reLaunch
-        runtime.evaluateScript("miniapp.reLaunch({url: 'pages/home/home'})")
+        runtime.evaluateScript("miniapp.nav.reLaunch({url: 'pages/home/home'})")
         XCTAssertEqual(runtime.navigationModule?.pendingAction, .reLaunch(url: "pages/home/home"))
 
         runtime.navigationModule?.pendingAction = nil
 
         // switchTab
-        runtime.evaluateScript("miniapp.switchTab({url: 'pages/list/list'})")
+        runtime.evaluateScript("miniapp.nav.switchTab({url: 'pages/list/list'})")
         XCTAssertEqual(runtime.navigationModule?.pendingAction, .switchTab(url: "pages/list/list"))
     }
 
@@ -2156,7 +2145,7 @@ final class SkipMiniAppModelTests: XCTestCase {
         runtime.start()
 
         // navigateBack with no args should default to delta=1
-        runtime.evaluateScript("miniapp.navigateBack()")
+        runtime.evaluateScript("miniapp.nav.navigateBack()")
         XCTAssertEqual(runtime.navigationModule?.pendingAction, .navigateBack(delta: 1))
     }
 

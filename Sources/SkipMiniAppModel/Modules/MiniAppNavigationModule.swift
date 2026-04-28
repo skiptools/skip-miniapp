@@ -113,9 +113,11 @@ extension MiniAppModuleType {
             navModule.pendingAction = .navigateTo(url: url, query: query)
             return JSValue(undefinedIn: ctx)
         }
-        namespace.setObject(navigateToFn, forKeyedSubscript: "navigateTo")
+        // Create skip.nav namespace
+        let navObj = JSValue(newObjectIn: context)
+        navObj.setObject(navigateToFn, forKeyedSubscript: "navigateTo")
 
-        // skip.navigateBack({ delta })
+        // skip.nav.navigateBack({ delta })
         let navigateBackFn = JSValue(newFunctionIn: context) { ctx, obj, args in
             var delta = 1
             if let options = args.first, options.isObject {
@@ -127,7 +129,7 @@ extension MiniAppModuleType {
             navModule.pendingAction = .navigateBack(delta: delta)
             return JSValue(undefinedIn: ctx)
         }
-        namespace.setObject(navigateBackFn, forKeyedSubscript: "navigateBack")
+        navObj.setObject(navigateBackFn, forKeyedSubscript: "navigateBack")
 
         // skip.redirectTo({ url })
         let redirectToFn = JSValue(newFunctionIn: context) { ctx, obj, args in
@@ -137,7 +139,7 @@ extension MiniAppModuleType {
             navModule.pendingAction = .redirectTo(url: url)
             return JSValue(undefinedIn: ctx)
         }
-        namespace.setObject(redirectToFn, forKeyedSubscript: "redirectTo")
+        navObj.setObject(redirectToFn, forKeyedSubscript: "redirectTo")
 
         // skip.reLaunch({ url })
         let reLaunchFn = JSValue(newFunctionIn: context) { ctx, obj, args in
@@ -147,7 +149,7 @@ extension MiniAppModuleType {
             navModule.pendingAction = .reLaunch(url: url)
             return JSValue(undefinedIn: ctx)
         }
-        namespace.setObject(reLaunchFn, forKeyedSubscript: "reLaunch")
+        navObj.setObject(reLaunchFn, forKeyedSubscript: "reLaunch")
 
         // skip.switchTab({ url })
         let switchTabFn = JSValue(newFunctionIn: context) { ctx, obj, args in
@@ -157,7 +159,7 @@ extension MiniAppModuleType {
             navModule.pendingAction = .switchTab(url: url)
             return JSValue(undefinedIn: ctx)
         }
-        namespace.setObject(switchTabFn, forKeyedSubscript: "switchTab")
+        navObj.setObject(switchTabFn, forKeyedSubscript: "switchTab")
 
         // skip.setNavigationBarTitle({ title })
         let setTitleFn = JSValue(newFunctionIn: context) { ctx, obj, args in
@@ -169,7 +171,9 @@ extension MiniAppModuleType {
             }
             return JSValue(undefinedIn: ctx)
         }
-        namespace.setObject(setTitleFn, forKeyedSubscript: "setNavigationBarTitle")
+        navObj.setObject(setTitleFn, forKeyedSubscript: "setNavigationBarTitle")
+
+        namespace.setObject(navObj, forKeyedSubscript: "nav")
 
         // Store reference on runtime
         runtime.navigationModule = self
