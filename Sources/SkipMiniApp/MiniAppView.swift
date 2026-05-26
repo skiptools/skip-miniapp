@@ -611,15 +611,33 @@ public struct MiniAppPageView: View {
             }
         };
 
-        // --- Start Alpine after DOM is ready ---
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', function() { Alpine.start(); });
-        } else {
-            Alpine.start();
-        }
+        // NOTE: Do NOT call Alpine.start() here. The CSP build of Alpine auto-starts
+        // itself via `queueMicrotask(() => Alpine.start())` at the end of its source.
+        // Calling start() a second time triggers "Alpine has already been initialized"
+        // and on Android's Chromium WebView re-runs initialization, which leaves the
+        // DOM bound to a stale store — making setData() updates invisible (counter
+        // buttons appear non-responsive). Our `alpine:init` listener above is
+        // installed synchronously before the auto-start microtask fires, so the
+        // store/data/magic registrations are already in place when Alpine starts.
         """
 
-        let fullScript = alpineSource + "\n" + bridgeScript
+        // Wrap the entire user script (Alpine.js source + our bridge) in an
+        // idempotency guard. On Android the injected document-end user script can
+        // fire more than once for a single page load. Without this guard, the
+        // Alpine.js IIFE would re-run on the second firing and queue a second
+        // `Alpine.start()` microtask, creating a fresh Alpine instance that
+        // overwrites window.Alpine while the DOM is already bound to the first
+        // instance's reactive store. The visible symptom: setData() updates land
+        // on the new store but the bound DOM never sees them, so counter and
+        // toggle buttons inside the miniapp appear non-responsive.
+        let fullScript = """
+        (function () {
+          if (window.__miniappBridgeInstalled) { return; }
+          window.__miniappBridgeInstalled = true;
+        \(alpineSource)
+        \(bridgeScript)
+        })();
+        """
         return WebViewUserScript(source: fullScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
     }
 
