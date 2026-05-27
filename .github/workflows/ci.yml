@@ -18,3 +18,4 @@ jobs:
       run-android-native-build: false
       # needed to be able to run e2e tests on Android emulator
       emulator-target: 'google_apis'
+      emulator-api-level: 31
