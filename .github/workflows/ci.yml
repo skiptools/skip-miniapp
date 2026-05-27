@@ -16,3 +16,5 @@ jobs:
     uses: skiptools/actions/.github/workflows/skip-framework.yml@v1
     with:
       run-android-native-build: false
+      # needed to be able to run e2e tests on Android emulator
+      emulator-target: 'google_apis'

@@ -27,6 +27,22 @@ final class MiniAppEndToEndTests: XCTestCase {
     @MainActor func testWebViewToJSCoreRoundTrip() async throws {
         if isMacOS { throw XCTSkip("requires iOS Simulator host") }
         if isRobolectric { throw XCTSkip("requires connected Android emulator/device") }
+//        #if SKIP
+//        // The bridge's `webkit.messageHandlers` facade and the
+//        // Alpine.js + bridge user script are both installed through
+//        // `WebViewCompat.addDocumentStartJavaScript`, which requires WebView
+//        // v88+ (Feb 2021). Older WebView APKs — commonly shipped with the
+//        // API 28 system images that the `reactivecircus/android-emulator-runner`
+//        // step in `skip-framework.yml` defaults to — throw
+//        // `UnsupportedOperationException` on that call. Production has the
+//        // same dependency: SkipWeb's `installAndroidScriptMessageFacadeIfNeeded`
+//        // silently no-ops when this feature is missing, leaving the bridge
+//        // unwired. So if the feature is unavailable, skip rather than crash;
+//        // the production stack would not work here either.
+//        if !androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT) {
+//            throw XCTSkip("Android WebView lacks WebViewFeature.DOCUMENT_START_SCRIPT; bridge cannot be installed")
+//        }
+//        #endif
 
         let root = try stageMiniApp()
         defer { try? FileManager.default.removeItem(at: root) }
