@@ -359,7 +359,7 @@ public struct MiniAppHostView: View {
 /// Each page in the navigation stack gets its own instance of this view,
 /// with its own WebView, Alpine.js state, and bridge connection. When the
 /// view is popped from the navigation stack, the WebView is destroyed.
-public struct MiniAppPageView: View {
+@MainActor public struct MiniAppPageView: View {
     let pagePath: String
     let query: String
     let runtime: MiniAppRuntime
@@ -526,7 +526,7 @@ internal func miniAppEscapeJSString(_ str: String) -> String {
 /// - `window.$model(key, value)` posts `__model` messages for two-way binding
 /// - `Alpine.store('page', ...)` holds the page's reactive data
 /// - `window.__miniappSetData(patch)` applies Logic Layer updates into the store
-internal func makeMiniAppBridgeUserScript(runtime: MiniAppRuntime, pagePath: String) -> WebViewUserScript {
+@MainActor internal func makeMiniAppBridgeUserScript(runtime: MiniAppRuntime, pagePath: String) -> WebViewUserScript {
     let initialData = runtime.initialDataJSON(forPage: pagePath)
     let handlerNames = runtime.pageHandlerNames(forPage: pagePath)
     let translationsJSON = runtime.i18nModule?.translationsJSON() ?? "{}"
