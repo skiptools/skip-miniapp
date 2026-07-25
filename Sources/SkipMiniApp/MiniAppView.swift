@@ -467,9 +467,9 @@ public struct MiniAppPageView: View {
         guard let onSnapshot = onSnapshot, let webEngine = navigator.webEngine else { return }
         Task { @MainActor in
             do {
-                let config = SkipWebSnapshotConfiguration(snapshotWidth: 300)
+                let config = SkipWebSnapshotConfiguration(snapshotWidth: 300, imageFormat: .png)
                 let snapshot = try await webEngine.takeSnapshot(configuration: config)
-                onSnapshot(snapshot.pngData)
+                onSnapshot(snapshot.imageData)
             } catch {
                 // Snapshot capture is best-effort; ignore errors
             }
