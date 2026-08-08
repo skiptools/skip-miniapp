@@ -1,3 +1,11 @@
 # Configuration file for Skip (https://skip.dev) project
-#build:
-#  contents:
+#
+# Kotlin dependencies and Gradle build options for this module can be configured here.
+# The androidx.webkit dependency is needed by MiniAppEndToEndTests on Android to
+# call `androidx.webkit.WebViewCompat.addDocumentStartJavaScript`, replicating
+# SkipWeb's setupWebView wiring without the SwiftUI host.
+build:
+  contents:
+    - block: 'dependencies'
+      contents:
+        - 'implementation("androidx.webkit:webkit:1.15.0")'

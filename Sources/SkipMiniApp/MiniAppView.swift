@@ -359,7 +359,7 @@ public struct MiniAppHostView: View {
 /// Each page in the navigation stack gets its own instance of this view,
 /// with its own WebView, Alpine.js state, and bridge connection. When the
 /// view is popped from the navigation stack, the WebView is destroyed.
-public struct MiniAppPageView: View {
+@MainActor public struct MiniAppPageView: View {
     let pagePath: String
     let query: String
     let runtime: MiniAppRuntime
@@ -482,211 +482,12 @@ public struct MiniAppPageView: View {
 
     /// WebView configuration with message handlers and bridge user script.
     private var webViewConfiguration: WebEngineConfiguration {
-        let config = WebEngineConfiguration(
-            userScripts: [bridgeUserScript],
+        WebEngineConfiguration(
+            userScripts: [makeMiniAppBridgeUserScript(runtime: runtime, pagePath: pagePath)],
             messageHandlers: ["miniappBridge": { message in
-                await handleBridgeMessage(message)
+                await dispatchMiniAppBridgeMessage(message, runtime: runtime, pagePath: pagePath)
             }]
         )
-        return config
-    }
-
-    /// Alpine.js CSP build source, loaded from the framework bundle.
-    private var alpineSource: String {
-        guard let url = Bundle.module.url(forResource: "alpine-csp.min", withExtension: "js"),
-              let source = try? String(contentsOf: url, encoding: .utf8) else {
-            return "/* Alpine.js CSP build not found */"
-        }
-        return source
-    }
-
-    /// JavaScript injected into this page's WebView for the View Layer.
-    private var bridgeUserScript: WebViewUserScript {
-        let initialData = runtime.initialDataJSON(forPage: pagePath)
-        let handlerNames = runtime.pageHandlerNames(forPage: pagePath)
-        let translationsJSON = runtime.i18nModule?.translationsJSON() ?? "{}"
-        let activeLocale = runtime.i18nModule?.activeLocale ?? "en"
-
-        var handlerProps = ""
-        for name in handlerNames {
-            let safeName = name.replacingOccurrences(of: "'", with: "\\'")
-            handlerProps += "                    \(name): function(detail) { window.$handler('\(safeName)', detail); },\n"
-        }
-
-        let bridgeScript = """
-        // --- Bridge: event dispatch to Logic Layer ---
-        window.$handler = function(name, detail) {
-            try {
-                webkit.messageHandlers.miniappBridge.postMessage({
-                    action: '__event',
-                    data: { type: 'tap', handler: name, detail: detail || {} }
-                });
-            } catch(e) {}
-        };
-
-        // --- Bridge: two-way model sync to Logic Layer ---
-        window.$model = function(key, value) {
-            try {
-                webkit.messageHandlers.miniappBridge.postMessage({
-                    action: '__model',
-                    data: { key: key, value: String(value) }
-                });
-            } catch(e) {}
-        };
-
-        // --- Internationalization ---
-        window.__i18nMessages = JSON.parse('\(Self.escapeJSString(translationsJSON))');
-        window.__i18nLocale = '\(Self.escapeJSString(activeLocale))';
-        window.__i18nTranslate = function(key, params) {
-            var msg = window.__i18nMessages[key] || key;
-            if (params) {
-                var keys = Object.keys(params);
-                for (var i = 0; i < keys.length; i++) {
-                    var k = keys[i];
-                    msg = msg.split('{' + k + '}').join(String(params[k]));
-                }
-            }
-            return msg;
-        };
-
-        // --- Alpine initialization ---
-        document.addEventListener('alpine:init', function() {
-            // Register $t magic for localization in templates
-            Alpine.magic('t', function() {
-                return function(key, params) {
-                    return window.__i18nTranslate(key, params);
-                };
-            });
-
-            // Register the reactive page data store
-            Alpine.store('page', \(initialData));
-
-            // Register the page component used via x-data="page"
-            Alpine.data('page', function() {
-                return {
-                    get store() { return Alpine.store('page'); },
-                    handler: function(name, detail) { window.$handler(name, detail); },
-                    model: function(key) { window.$model(key, Alpine.store('page')[key]); },
-        \(handlerProps)
-                    init: function() {
-                        this.$nextTick(function() {
-                            var els = document.querySelectorAll('[x-model]');
-                            for (var i = 0; i < els.length; i++) {
-                                (function(el) {
-                                    var attr = el.getAttribute('x-model');
-                                    if (attr && attr.indexOf('store.') === 0) {
-                                        var key = attr.substring(6);
-                                        el.addEventListener('input', function() {
-                                            window.$model(key, el.value);
-                                        });
-                                    }
-                                })(els[i]);
-                            }
-                        });
-                    }
-                };
-            });
-        });
-
-        // --- setData bridge: Logic Layer → View Layer ---
-        window.__miniappSetData = function(patch) {
-            if (typeof Alpine === 'undefined') return;
-            var store = Alpine.store('page');
-            if (!store) return;
-            var keys = Object.keys(patch);
-            for (var i = 0; i < keys.length; i++) {
-                var key = keys[i];
-                var val = patch[key];
-                if (key.indexOf('.') === -1 && key.indexOf('[') === -1) {
-                    store[key] = val;
-                } else {
-                    var parts = key.replace(/\\[/g, '.').replace(/\\]/g, '').split('.');
-                    var obj = store;
-                    for (var j = 0; j < parts.length - 1; j++) {
-                        if (obj[parts[j]] === undefined) obj[parts[j]] = {};
-                        obj = obj[parts[j]];
-                    }
-                    obj[parts[parts.length - 1]] = val;
-                }
-            }
-        };
-
-        // NOTE: Do NOT call Alpine.start() here. The CSP build of Alpine auto-starts
-        // itself via `queueMicrotask(() => Alpine.start())` at the end of its source.
-        // Calling start() a second time triggers "Alpine has already been initialized"
-        // and on Android's Chromium WebView re-runs initialization, which leaves the
-        // DOM bound to a stale store — making setData() updates invisible (counter
-        // buttons appear non-responsive). Our `alpine:init` listener above is
-        // installed synchronously before the auto-start microtask fires, so the
-        // store/data/magic registrations are already in place when Alpine starts.
-        """
-
-        // Wrap the entire user script (Alpine.js source + our bridge) in an
-        // idempotency guard. On Android the injected document-end user script can
-        // fire more than once for a single page load. Without this guard, the
-        // Alpine.js IIFE would re-run on the second firing and queue a second
-        // `Alpine.start()` microtask, creating a fresh Alpine instance that
-        // overwrites window.Alpine while the DOM is already bound to the first
-        // instance's reactive store. The visible symptom: setData() updates land
-        // on the new store but the bound DOM never sees them, so counter and
-        // toggle buttons inside the miniapp appear non-responsive.
-        let fullScript = """
-        (function () {
-          if (window.__miniappBridgeInstalled) { return; }
-          window.__miniappBridgeInstalled = true;
-        \(alpineSource)
-        \(bridgeScript)
-        })();
-        """
-        return WebViewUserScript(source: fullScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
-    }
-
-    // MARK: - Bridge Message Handling
-
-    @MainActor
-    private func handleBridgeMessage(_ message: WebViewMessage) {
-        let json: [String: Any]
-        // SKIP NOWARN
-        if let dict = message.body as? [String: Any] {
-            json = dict
-        } else if let bodyString = message.body as? String,
-                  let bodyData = bodyString.data(using: .utf8),
-                  // SKIP NOWARN
-                  let parsed = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] {
-            json = parsed
-        } else {
-            return
-        }
-
-        // SKIP NOWARN
-        guard let action = json["action"] as? String,
-              // SKIP NOWARN
-              let data = json["data"] as? [String: Any] else {
-            return
-        }
-
-        switch action {
-        case "__event":
-            if let handlerName = data["handler"] as? String {
-                let eventType = data["type"] as? String ?? "tap"
-                let detail: Any = data["detail"] ?? [String: Any]()
-                let fullEvent: [String: Any] = [
-                    "type": eventType,
-                    "detail": detail
-                ]
-                if let eventData = try? JSONSerialization.data(withJSONObject: fullEvent),
-                   let eventJSON = String(data: eventData, encoding: .utf8) {
-                    runtime.dispatchEvent(handlerName: handlerName, eventJSON: eventJSON, forPage: pagePath)
-                }
-            }
-        case "__model":
-            if let key = data["key"] as? String {
-                let value = data["value"] as? String ?? ""
-                runtime.updatePageData(key: key, value: value)
-            }
-        default:
-            break
-        }
     }
 
     /// Push a setData patch from the Logic Layer to this page's WebView.
@@ -697,13 +498,231 @@ public struct MiniAppPageView: View {
             let _ = try? await navigator.evaluateJavaScript(js)
         }
     }
+}
 
-    /// Escape a string for safe embedding in a JavaScript single-quoted string.
-    private static func escapeJSString(_ str: String) -> String {
-        return str.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-            .replacingOccurrences(of: "\n", with: "\\n")
-            .replacingOccurrences(of: "\r", with: "\\r")
+// MARK: - Bridge Helpers (internal, shared with tests)
+
+/// Alpine.js CSP build source, loaded from the SkipMiniApp framework bundle.
+internal func miniAppAlpineSource() -> String {
+    guard let url = Bundle.module.url(forResource: "alpine-csp.min", withExtension: "js"),
+          let source = try? String(contentsOf: url, encoding: .utf8) else {
+        return "/* Alpine.js CSP build not found */"
+    }
+    return source
+}
+
+/// Escape a string for safe embedding in a JavaScript single-quoted string literal.
+internal func miniAppEscapeJSString(_ str: String) -> String {
+    return str.replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "'", with: "\\'")
+        .replacingOccurrences(of: "\n", with: "\\n")
+        .replacingOccurrences(of: "\r", with: "\\r")
+}
+
+/// Build the WebView user script (Alpine.js + bridge JS) for the given runtime and page.
+///
+/// The script is injected at document-end and wires up the View ↔ Logic bridge:
+/// - `window.$handler(name, detail)` posts `__event` messages to the native bridge
+/// - `window.$model(key, value)` posts `__model` messages for two-way binding
+/// - `Alpine.store('page', ...)` holds the page's reactive data
+/// - `window.__miniappSetData(patch)` applies Logic Layer updates into the store
+@MainActor internal func makeMiniAppBridgeUserScript(runtime: MiniAppRuntime, pagePath: String) -> WebViewUserScript {
+    let initialData = runtime.initialDataJSON(forPage: pagePath)
+    let handlerNames = runtime.pageHandlerNames(forPage: pagePath)
+    let translationsJSON = runtime.i18nModule?.translationsJSON() ?? "{}"
+    let activeLocale = runtime.i18nModule?.activeLocale ?? "en"
+
+    var handlerProps = ""
+    for name in handlerNames {
+        let safeName = name.replacingOccurrences(of: "'", with: "\\'")
+        handlerProps += "                    \(name): function(detail) { window.$handler('\(safeName)', detail); },\n"
+    }
+
+    let bridgeScript = """
+    // --- Bridge: event dispatch to Logic Layer ---
+    window.$handler = function(name, detail) {
+        try {
+            webkit.messageHandlers.miniappBridge.postMessage({
+                action: '__event',
+                data: { type: 'tap', handler: name, detail: detail || {} }
+            });
+        } catch(e) {}
+    };
+
+    // --- Bridge: two-way model sync to Logic Layer ---
+    window.$model = function(key, value) {
+        try {
+            webkit.messageHandlers.miniappBridge.postMessage({
+                action: '__model',
+                data: { key: key, value: String(value) }
+            });
+        } catch(e) {}
+    };
+
+    // --- Internationalization ---
+    window.__i18nMessages = JSON.parse('\(miniAppEscapeJSString(translationsJSON))');
+    window.__i18nLocale = '\(miniAppEscapeJSString(activeLocale))';
+    window.__i18nTranslate = function(key, params) {
+        var msg = window.__i18nMessages[key] || key;
+        if (params) {
+            var keys = Object.keys(params);
+            for (var i = 0; i < keys.length; i++) {
+                var k = keys[i];
+                msg = msg.split('{' + k + '}').join(String(params[k]));
+            }
+        }
+        return msg;
+    };
+
+    // --- Alpine initialization ---
+    document.addEventListener('alpine:init', function() {
+        // Register $t magic for localization in templates
+        Alpine.magic('t', function() {
+            return function(key, params) {
+                return window.__i18nTranslate(key, params);
+            };
+        });
+
+        // Register the reactive page data store
+        Alpine.store('page', \(initialData));
+
+        // Register the page component used via x-data="page"
+        Alpine.data('page', function() {
+            return {
+                get store() { return Alpine.store('page'); },
+                handler: function(name, detail) { window.$handler(name, detail); },
+                model: function(key) { window.$model(key, Alpine.store('page')[key]); },
+    \(handlerProps)
+                init: function() {
+                    this.$nextTick(function() {
+                        var els = document.querySelectorAll('[x-model]');
+                        for (var i = 0; i < els.length; i++) {
+                            (function(el) {
+                                var attr = el.getAttribute('x-model');
+                                if (attr && attr.indexOf('store.') === 0) {
+                                    var key = attr.substring(6);
+                                    el.addEventListener('input', function() {
+                                        window.$model(key, el.value);
+                                    });
+                                }
+                            })(els[i]);
+                        }
+                    });
+                }
+            };
+        });
+    });
+
+    // --- setData bridge: Logic Layer → View Layer ---
+    window.__miniappSetData = function(patch) {
+        if (typeof Alpine === 'undefined') return;
+        var store = Alpine.store('page');
+        if (!store) return;
+        var keys = Object.keys(patch);
+        for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
+            var val = patch[key];
+            if (key.indexOf('.') === -1 && key.indexOf('[') === -1) {
+                store[key] = val;
+            } else {
+                var parts = key.replace(/\\[/g, '.').replace(/\\]/g, '').split('.');
+                var obj = store;
+                for (var j = 0; j < parts.length - 1; j++) {
+                    if (obj[parts[j]] === undefined) obj[parts[j]] = {};
+                    obj = obj[parts[j]];
+                }
+                obj[parts[parts.length - 1]] = val;
+            }
+        }
+    };
+
+    // NOTE: Do NOT call Alpine.start() here. The CSP build of Alpine auto-starts
+    // itself via `queueMicrotask(() => Alpine.start())` at the end of its source.
+    // Calling start() a second time triggers "Alpine has already been initialized"
+    // and on Android's Chromium WebView re-runs initialization, which leaves the
+    // DOM bound to a stale store — making setData() updates invisible (counter
+    // buttons appear non-responsive). Our `alpine:init` listener above is
+    // installed synchronously before the auto-start microtask fires, so the
+    // store/data/magic registrations are already in place when Alpine starts.
+    """
+
+    // Wrap the entire user script (Alpine.js source + our bridge) in an
+    // idempotency guard. On Android the injected document-end user script can
+    // fire more than once for a single page load. Without this guard, the
+    // Alpine.js IIFE would re-run on the second firing and queue a second
+    // `Alpine.start()` microtask, creating a fresh Alpine instance that
+    // overwrites window.Alpine while the DOM is already bound to the first
+    // instance's reactive store. The visible symptom: setData() updates land
+    // on the new store but the bound DOM never sees them, so counter and
+    // toggle buttons inside the miniapp appear non-responsive.
+    let fullScript = """
+    (function () {
+      if (window.__miniappBridgeInstalled) { return; }
+      window.__miniappBridgeInstalled = true;
+    \(miniAppAlpineSource())
+    \(bridgeScript)
+    })();
+    """
+    return WebViewUserScript(source: fullScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+}
+
+/// Dispatch a message received from the WebView's bridge into the JSContext runtime.
+///
+/// Decodes the message body as either a `[String: Any]` dictionary (iOS WKWebView)
+/// or a JSON string (Android), then routes `__event` actions to `runtime.dispatchEvent`
+/// and `__model` actions to `runtime.updatePageData`.
+@MainActor
+internal func dispatchMiniAppBridgeMessage(_ message: WebViewMessage, runtime: MiniAppRuntime, pagePath: String) {
+    let json: [String: Any]
+    // SKIP NOWARN
+    if let dict = message.body as? [String: Any] {
+        json = dict
+    } else if let bodyString = message.body as? String,
+              let bodyData = bodyString.data(using: .utf8),
+              // SKIP NOWARN
+              let parsed = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] {
+        json = parsed
+    } else {
+        return
+    }
+    dispatchMiniAppBridgeJSON(json, runtime: runtime, pagePath: pagePath)
+}
+
+/// Pure-JSON entry point for the bridge dispatcher, decoupled from `WebViewMessage`.
+///
+/// Exposed so tests (and bespoke bridge implementations, e.g. a non-SwiftUI Android
+/// host) can route a parsed `[String: Any]` directly into the runtime without
+/// constructing a `WebViewMessage` (whose initializer is internal to SkipWeb).
+@MainActor
+internal func dispatchMiniAppBridgeJSON(_ json: [String: Any], runtime: MiniAppRuntime, pagePath: String) {
+    // SKIP NOWARN
+    guard let action = json["action"] as? String,
+          // SKIP NOWARN
+          let data = json["data"] as? [String: Any] else {
+        return
+    }
+
+    switch action {
+    case "__event":
+        if let handlerName = data["handler"] as? String {
+            let eventType = data["type"] as? String ?? "tap"
+            let detail: Any = data["detail"] ?? [String: Any]()
+            let fullEvent: [String: Any] = [
+                "type": eventType,
+                "detail": detail
+            ]
+            if let eventData = try? JSONSerialization.data(withJSONObject: fullEvent),
+               let eventJSON = String(data: eventData, encoding: .utf8) {
+                runtime.dispatchEvent(handlerName: handlerName, eventJSON: eventJSON, forPage: pagePath)
+            }
+        }
+    case "__model":
+        if let key = data["key"] as? String {
+            let value = data["value"] as? String ?? ""
+            runtime.updatePageData(key: key, value: value)
+        }
+    default:
+        break
     }
 }
 
