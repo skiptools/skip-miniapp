@@ -12,13 +12,13 @@ let package = Package(
         .library(name: "SkipMiniAppSQL", type: .dynamic, targets: ["SkipMiniAppSQL"]),
     ],
     dependencies: [
-        .package(url: "https://source.skip.tools/skip.git", from: "1.7.2"),
-        .package(url: "https://source.skip.tools/skip-model.git", from: "1.0.0"),
-        .package(url: "https://source.skip.tools/skip-ui.git", from: "1.0.0"),
-        .package(url: "https://source.skip.tools/skip-web.git", "0.0.0"..<"2.0.0"),
-        .package(url: "https://source.skip.tools/skip-script.git", "0.0.0"..<"2.0.0"),
-        .package(url: "https://source.skip.tools/skip-zip.git", "0.0.0"..<"2.0.0"),
-        .package(url: "https://source.skip.tools/skip-sql.git", "0.0.0"..<"2.0.0"), // for SkipMiniAppSQL
+        .package(url: "https://github.com/skiptools/skip.git", from: "1.7.2"),
+        .package(url: "https://github.com/skiptools/skip-model.git", from: "1.0.0"),
+        .package(url: "https://github.com/skiptools/skip-ui.git", from: "1.0.0"),
+        .package(url: "https://github.com/skiptools/skip-web.git", "0.0.0"..<"2.0.0"),
+        .package(url: "https://github.com/skiptools/skip-script.git", "0.0.0"..<"2.0.0"),
+        .package(url: "https://github.com/skiptools/skip-zip.git", "0.0.0"..<"2.0.0"),
+        .package(url: "https://github.com/skiptools/skip-sql.git", "0.0.0"..<"2.0.0"), // for SkipMiniAppSQL
     ],
     targets: [
         .target(name: "SkipMiniApp", dependencies: [
@@ -52,7 +52,7 @@ let package = Package(
 )
 
 if Context.environment["SKIP_BRIDGE"] ?? "0" != "0" {
-    package.dependencies += [.package(url: "https://source.skip.tools/skip-bridge.git", "0.0.0"..<"2.0.0")]
+    package.dependencies += [.package(url: "https://github.com/skiptools/skip-bridge.git", "0.0.0"..<"2.0.0")]
     package.targets.forEach({ target in
         target.dependencies += [.product(name: "SkipBridge", package: "skip-bridge")]
     })
